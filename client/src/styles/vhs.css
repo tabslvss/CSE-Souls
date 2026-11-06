@@ -1,0 +1,80 @@
+/*
+ * A faint worn-tape feel over the web pages: fine scanlines and one soft band drifting down the
+ * screen. It sits above everything but takes no clicks. The game has its own tape in the renderer,
+ * so the overlay stands down while the game is on screen. These live on html because body::before
+ * already holds the film grain in base.css.
+ */
+html[data-vhs='on']::before,
+html[data-vhs='on']::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  pointer-events: none;
+}
+
+html[data-vhs='on']::before {
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.055) 2px,
+    rgba(0, 0, 0, 0.055) 3px
+  );
+}
+
+html[data-vhs='on']::after {
+  inset: auto 0 auto 0;
+  top: 0;
+  height: 16vh;
+  background: linear-gradient(
+    to bottom,
+    rgba(236, 213, 155, 0) 0,
+    rgba(236, 213, 155, 0.018) 46%,
+    rgba(255, 255, 255, 0.032) 52%,
+    rgba(236, 213, 155, 0.012) 60%,
+    rgba(236, 213, 155, 0) 100%
+  );
+  will-change: transform;
+  animation: vhs-track 13s linear infinite;
+}
+
+@keyframes vhs-track {
+  from {
+    transform: translateY(-20vh);
+  }
+  to {
+    transform: translateY(104vh);
+  }
+}
+
+html[data-vhs='on']:has(.game)::before,
+html[data-vhs='on']:has(.game)::after {
+  display: none;
+}
+
+/* The logo's colors slip apart under the pointer, like a bad tracking line. */
+.brand__word,
+.hero__logo img {
+  transition:
+    text-shadow 0.18s ease,
+    filter 0.18s ease;
+}
+
+html[data-vhs='on'] .brand:hover .brand__word {
+  text-shadow:
+    1.5px 0 rgba(255, 60, 50, 0.65),
+    -1.5px 0 rgba(70, 215, 235, 0.5);
+}
+
+html[data-vhs='on'] .hero__logo:hover img {
+  filter: drop-shadow(3px 0 0 rgba(255, 60, 50, 0.45)) drop-shadow(-3px 0 0 rgba(70, 215, 235, 0.35));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Scanlines stay, since they don't move. The drifting band goes. */
+  html[data-vhs='on']::after {
+    display: none;
+    animation: none;
+  }
+}

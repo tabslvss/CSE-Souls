@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- A development tool for trying every combat effect. Only the Vite dev server serves it:
+     open http://localhost:5173/fx-lab.html. It isn't part of the production build. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Effects lab</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 13px sans-serif; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #bar { position: fixed; top: 6px; left: 6px; right: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+      button { font: inherit; padding: 3px 7px; background: #2a2622; color: #eed; border: 1px solid #554; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="bar"></div>
+    <script type="module" src="/src/game/fxLab.ts"></script>
+  </body>
+</html>

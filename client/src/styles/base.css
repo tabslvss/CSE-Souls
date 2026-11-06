@@ -1,0 +1,200 @@
+:root {
+  --black: #070605;
+  --bg: #0a0908;
+  --surface-1: #100e0b;
+  --surface-2: #181510;
+  --surface-3: #231e16;
+
+  --line: rgba(201, 164, 92, 0.24);
+  --line-strong: rgba(201, 164, 92, 0.55);
+
+  --gold: #c9a45c;
+  --gold-bright: #ecd59b;
+  --gold-pale: #f6ecd2;
+  --gold-deep: #7d5f2b;
+  --glow: rgba(236, 200, 120, 0.3);
+
+  --ember: #e08a3a;
+  --blood: #8a2f2f;
+  --blood-bright: #c04a46;
+
+  --text: #ebe4d3;
+  --text-2: #bdb4a0;
+  --muted: #988f7c;
+
+  --mana: #466fae;
+  --stamina: #7d8f47;
+
+  --font-display: 'Cinzel', 'Trajan Pro', Georgia, serif;
+  --font-body: 'EB Garamond', Georgia, 'Times New Roman', serif;
+
+  --topbar-height: 66px;
+  --page-width: 1180px;
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 1.1875rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Film grain over everything. Static, so it costs nothing per frame. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 500;
+  color: var(--gold-pale);
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+p {
+  margin: 0;
+}
+
+ul,
+ol,
+dl,
+dd {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--gold-bright);
+  text-decoration-color: var(--gold-deep);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--gold-pale);
+}
+
+:focus-visible {
+  outline: 2px solid var(--gold-bright);
+  outline-offset: 3px;
+}
+
+::selection {
+  background: var(--gold-deep);
+  color: #fff;
+}
+
+.skip-link {
+  position: fixed;
+  top: -60px;
+  left: 16px;
+  z-index: 300;
+  padding: 8px 16px;
+  background: var(--gold-pale);
+  color: var(--black);
+}
+
+.skip-link:focus {
+  top: 12px;
+}
+
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.lede {
+  font-size: 1.28rem;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.center {
+  text-align: center;
+}
+
+.page {
+  width: min(100%, var(--page-width));
+  margin-inline: auto;
+  padding: calc(var(--topbar-height) + 56px) 24px 96px;
+  min-height: 74vh;
+}
+
+.page--narrow {
+  width: min(100%, 940px);
+}
+
+.page-loading {
+  display: grid;
+  place-items: center;
+  min-height: 70vh;
+  font-size: 1.25rem;
+  color: var(--muted);
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition:
+    opacity 0.8s ease,
+    transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.reveal[data-visible='true'] {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .reveal {
+    opacity: 1;
+    transform: none;
+  }
+}

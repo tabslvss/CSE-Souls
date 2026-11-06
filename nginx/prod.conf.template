@@ -1,0 +1,37 @@
+# Deployed config. The nginx image substitutes ${DOMAIN} at container start.
+include /etc/nginx/snippets/http_context.conf;
+
+# Port 80 exists only to answer Certbot renewals and redirect to HTTPS on the same path.
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    include /etc/nginx/snippets/server_common.conf;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://${DOMAIN}$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE+AESGCM:ECDHE+CHACHA20;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # Every cookie is Secure on the deployed site, whatever the services send.
+    proxy_cookie_flags ~ secure;
+
+    include /etc/nginx/snippets/server_common.conf;
+    include /etc/nginx/snippets/routes.conf;
+}

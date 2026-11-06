@@ -1,0 +1,21 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Real secrets. The placeholder .env IS committed; see the note inside it.
+.env.prod
+.env.local
+
+# Certificates and keys must never enter the repo.
+*.pem
+*.key
+*.crt
+certbot/
+
+# Raw image downloads. Optimized copies live in client/public/art.
+client/art-source/*
+!client/art-source/.gitkeep
+
+# Local editor and assistant settings.
+.claude/

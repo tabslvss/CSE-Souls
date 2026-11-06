@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- A development tool for checking how characters hold weapons. Only the Vite dev server serves
+     it: open http://localhost:5173/weapon-lab.html. It isn't part of the production build. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Weapon lab</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #30343a; color: #eee; font: 13px sans-serif; }
+      canvas { display: block; }
+      #bar { position: fixed; top: 6px; left: 6px; display: flex; gap: 6px; }
+    </style>
+  </head>
+  <body>
+    <div id="bar"></div>
+    <canvas id="view"></canvas>
+    <script type="module" src="/src/game/weaponLab.ts"></script>
+  </body>
+</html>

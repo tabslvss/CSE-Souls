@@ -1,0 +1,20 @@
+All 3D assets in this folder are CC0 1.0 (public domain, no attribution required).
+Credits are given on the site's Credits page anyway.
+
+kit-male.glb, kit-female.glb
+  Universal Base Characters and Modular Character Outfits - Fantasy, by Quaternius
+  https://quaternius.itch.io/universal-base-characters
+  https://quaternius.itch.io/modular-character-outfits-fantasy
+  Changes: parts combined onto one skeleton, reduced polygon count, textures reduced to 256px,
+  head and neck cut from the base body so they can sit above outfits.
+
+anim-1.glb, anim-2.glb
+  Universal Animation Library and Universal Animation Library 2, by Quaternius
+  https://quaternius.itch.io/universal-animation-library
+  https://quaternius.itch.io/universal-animation-library-2
+  Changes: mannequin removed, unused clips removed, tracks compressed.
+
+weapons.glb
+  PSX Weapon Pack, by Amos: https://amos-makes.itch.io/psx-weapon-pack
+  LowPoly Fantasy Weapon Pack, by CardinalZebra: https://cardinalzebra.itch.io/low-poly-fantasy-weapon-pack
+  Changes: converted to glTF where needed, combined into one file, textures reduced.
