@@ -39,7 +39,12 @@ export function CreditsPage() {
         </ul>
 
         <h2 className="panel-title">Sound effects</h2>
-        <p>Generated with ElevenLabs for this project, then edited.</p>
+        <p>
+          Most sounds were generated with <External href="https://elevenlabs.io/terms-of-use">ElevenLabs</External> Sound
+          Effects for this project, then edited. Footsteps and some hits use{' '}
+          <External href="https://kenney.nl/assets/impact-sounds">Impact Sounds</External> and{' '}
+          <External href="https://kenney.nl/assets/rpg-audio">RPG Audio</External> by Kenney, released under CC0.
+        </p>
 
         <h2 className="panel-title">Website art</h2>
         <p>Generated with ChatGPT for this project.</p>
@@ -57,11 +62,57 @@ export function CreditsPage() {
           by CardinalZebra, both released under CC0.
         </p>
 
+        <h2 className="panel-title">Animals</h2>
+        <p>
+          <External href="https://quaternius.com/packs/ultimateanimatedanimals.html">Ultimate Animated Animal Pack</External>{' '}
+          by Quaternius, released under CC0.
+        </p>
+
+        <h2 className="panel-title">Forest</h2>
+        <ul>
+          <li>
+            PSX+ Forest by ju5t1nj <External href="https://ju5t1nj.itch.io/">https://ju5t1nj.itch.io/</External>, under
+            Creative Commons Attribution (<External href="https://ju5t1nj.itch.io/psx-plus-forest-pack">pack page</External>).
+            Converted, rescaled and darkened.
+          </li>
+          <li>
+            <External href="https://godgoldfear.itch.io/low-poly-dead-trees">Low Poly dead trees</External> by godgoldfear,
+            under <External href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</External>. Converted, rescaled and
+            darkened.
+          </li>
+          <li>
+            <External href="https://quaternius.itch.io/stylized-nature-megakit">Stylized Nature MegaKit</External> by Quaternius
+            and <External href="https://kenney.nl/assets/nature-kit">Nature Kit</External> by Kenney, released under CC0.
+          </li>
+        </ul>
+
+        <h2 className="panel-title">Castle and ruins</h2>
+        <p>
+          <External href="https://quaternius.com/packs/ultimatemodularruins.html">Ultimate Modular Ruins Pack</External>,{' '}
+          <External href="https://quaternius.itch.io/fantasy-props-megakit">Fantasy Props MegaKit</External> and{' '}
+          <External href="https://quaternius.itch.io/medieval-village-megakit">Medieval Village MegaKit</External> by Quaternius,{' '}
+          <External href="https://chilly-durango.itch.io/medieval-building-parts">3D Retro Medieval/Fantasy Building Kit</External>{' '}
+          by chilly_durango, and <External href="https://kenney.nl/assets/castle-kit">Castle Kit 2.0</External> by Kenney, all
+          released under CC0.
+        </p>
+
+        <h2 className="panel-title">Ground and particles</h2>
+        <p>
+          <External href="https://screamingbrainstudios.itch.io/tiny-texture-pack">Tiny Texture Pack 1</External> by Screaming
+          Brain Studios, and <External href="https://kenney.nl/assets/retro-textures-fantasy">Retro Textures Fantasy</External>,{' '}
+          <External href="https://kenney.nl/assets/particle-pack">Particle Pack</External> and{' '}
+          <External href="https://kenney.nl/assets/smoke-particles">Smoke Particles</External> by Kenney, all released under CC0.
+        </p>
+
         <h2 className="panel-title">Icons</h2>
         <p>
           Icons made by {ICON_AUTHORS.join(', ')}. Available on{' '}
           <External href="https://game-icons.net">game-icons.net</External>, under{' '}
           <External href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</External>. Recolored for this site.
+        </p>
+        <p>
+          Button pictures from <External href="https://kenney.nl/assets/input-prompts">Input Prompts</External> by Kenney,
+          released under CC0.
         </p>
 
         <h2 className="panel-title">Services</h2>

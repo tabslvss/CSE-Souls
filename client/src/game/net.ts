@@ -1,10 +1,24 @@
+import { weaponFor } from '../../../shared/combat';
+import { MAP } from '../../../shared/mapData';
 import type {
   ClientMessage,
+  CreatureSnapshot,
+  GameEvent,
   PlayerInfo,
   PlayerSnapshot,
   ServerMessage,
 } from '../../../shared/protocol';
-import { applySnapshot, FLAG_ATTACK, FLAG_DODGE, FLAG_POTION, FLAG_RUN, WS_CLOSE_EXPIRED, WS_CLOSE_REPLACED } from '../../../shared/protocol';
+import {
+  applySnapshot,
+  FLAG_ATTACK,
+  FLAG_DODGE,
+  FLAG_INTERACT,
+  FLAG_JUMP,
+  FLAG_POTION,
+  FLAG_RUN,
+  WS_CLOSE_EXPIRED,
+  WS_CLOSE_REPLACED,
+} from '../../../shared/protocol';
 import {
   createState,
   deriveStats,
@@ -21,6 +35,7 @@ const MAX_SNAPSHOTS_KEPT = 30;
 const MAX_FRAME_CATCHUP_STEPS = 5;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15_000;
+const MAP_RELOAD_KEY = 'cse-souls-map-reload';
 
 export interface RemoteFrame {
   time: number;
@@ -34,6 +49,7 @@ export interface RemoteFrame {
   deadTime: number;
   staggerTime: number;
   drinkTime: number;
+  jumpTime: number;
 }
 
 export interface NetPlayer {
@@ -48,7 +64,33 @@ export interface NetEvents {
   onJoin: (player: PlayerInfo) => void;
   onLeave: (id: number) => void;
   /** Called on every (re)connect, with the full player list. */
-  onWelcome: (myId: number, players: PlayerInfo[], binaryDust: number) => void;
+  onWelcome: (myId: number, players: PlayerInfo[], binaryDust: number, chests: number[]) => void;
+  onCreatures: (creatures: CreatureSnapshot[]) => void;
+  /** Runs after onCreatures for the same snapshot, so a hit can always find its creature. */
+  onGameEvents: (events: GameEvent[]) => void;
+  onSelf: (dust: number, kills: number) => void;
+  onChest: (id: number, dust: number, potion: boolean) => void;
+  onUnlock: (achievement: string) => void;
+}
+
+/** What one fixed step reads from the keyboard and mouse. Interact only goes to the server. */
+export type FrameInput = Omit<SimInput, 'seq'> & { interact: boolean };
+
+/**
+ * The server's map is newer than this page's copy, so collisions would disagree. A reload picks up the
+ * new one. It only tries once per version, so a stale cache can't trap the player in a reload loop.
+ */
+function reloadForNewMap(serverVersion: number): boolean {
+  if (serverVersion === MAP.version) return false;
+  try {
+    if (sessionStorage.getItem(MAP_RELOAD_KEY) === String(serverVersion)) return false;
+    sessionStorage.setItem(MAP_RELOAD_KEY, String(serverVersion));
+  } catch {
+    // Without storage it can't tell whether it already tried, so it stays and plays on.
+    return false;
+  }
+  window.location.reload();
+  return true;
 }
 
 function lerpAngle(a: number, b: number, t: number): number {
@@ -62,6 +104,11 @@ function lerpAngle(a: number, b: number, t: number): number {
  * - reconciliation: each snapshot rewinds you to the server's answer and replays unconfirmed inputs
  * - interpolation: other players are drawn by blending between their recent snapshots
  */
+/** A timer only counts down. If it went up, a new jump started there, and blending toward it would show the top of one. */
+function smoothedJump(from: number, to: number, t: number): number {
+  return to > from ? to : from + (to - from) * t;
+}
+
 export class GameConnection {
   myId = -1;
   readonly players = new Map<number, NetPlayer>();
@@ -113,8 +160,9 @@ export class GameConnection {
   private onMessage(message: ServerMessage): void {
     switch (message.t) {
       case 'welcome':
+        if (reloadForNewMap(message.mapVersion)) return;
         this.attempts = 0;
-        this.onWelcome(message.you, message.players, message.snapshot, message.binaryDust);
+        this.onWelcome(message.you, message.players, message.snapshot, message.binaryDust, message.chests);
         this.events.onStatus('open');
         break;
       case 'join':
@@ -127,6 +175,17 @@ export class GameConnection {
         break;
       case 's':
         this.onSnapshot(message.a, message.p);
+        this.events.onCreatures(message.c);
+        if (message.e) this.events.onGameEvents(message.e);
+        break;
+      case 'self':
+        this.events.onSelf(message.dust, message.kills);
+        break;
+      case 'chest':
+        this.events.onChest(message.id, message.dust, message.potion === 1);
+        break;
+      case 'unlock':
+        this.events.onUnlock(message.achievement);
         break;
       case 'no_character':
         this.disposed = true;
@@ -135,7 +194,7 @@ export class GameConnection {
     }
   }
 
-  private onWelcome(you: number, infos: PlayerInfo[], snapshot: PlayerSnapshot[], dust: number): void {
+  private onWelcome(you: number, infos: PlayerInfo[], snapshot: PlayerSnapshot[], dust: number, chests: number[]): void {
     this.myId = you;
     this.players.clear();
     this.pending = [];
@@ -144,14 +203,15 @@ export class GameConnection {
     for (const info of infos) this.players.set(info.id, { info, frames: [] });
 
     const mine = this.players.get(you)!;
-    this.derived = deriveStats(mine.info.stats);
+    // The same weapon numbers the server uses, or predicted attacks would run the wrong length and cost.
+    this.derived = deriveStats(mine.info.stats, weaponFor(mine.info.classId, mine.info.appearance.variant));
     this.state = createState(0, 0, this.derived);
     this.previous = { ...this.state };
     const entry = snapshot.find((item) => item[0] === you);
     if (entry) applySnapshot(entry, this.state);
     this.previous = { ...this.state };
 
-    this.events.onWelcome(you, infos, dust);
+    this.events.onWelcome(you, infos, dust, chests);
     this.onSnapshot(0, snapshot);
   }
 
@@ -177,6 +237,7 @@ export class GameConnection {
         deadTime: entry[17],
         staggerTime: entry[14],
         drinkTime: entry[19],
+        jumpTime: entry[20],
       });
       if (player.frames.length > MAX_SNAPSHOTS_KEPT) player.frames.shift();
     }
@@ -213,20 +274,26 @@ export class GameConnection {
   /** Runs fixed simulation steps for the time that passed, then sends those inputs. */
   advance(
     frameSeconds: number,
-    readInput: () => Omit<SimInput, 'seq'>,
+    readInput: () => FrameInput,
   ): void {
     if (!this.state || !this.derived || this.socket?.readyState !== WebSocket.OPEN) return;
     this.accumulator = Math.min(this.accumulator + frameSeconds, TICK_DT * MAX_FRAME_CATCHUP_STEPS);
     while (this.accumulator >= TICK_DT) {
       this.accumulator -= TICK_DT;
-      const input: SimInput = { seq: ++this.seq, ...readInput() };
+      const read = readInput();
+      const input: SimInput = { seq: ++this.seq, ...read };
       this.previous = { ...this.state };
       stepPlayer(this.state, input, this.derived);
       this.pending.push(input);
       this.sentAt.set(input.seq, performance.now());
 
       const flags =
-        (input.run ? FLAG_RUN : 0) | (input.dodge ? FLAG_DODGE : 0) | (input.attack ? FLAG_ATTACK : 0) | (input.potion ? FLAG_POTION : 0);
+        (input.run ? FLAG_RUN : 0) |
+        (input.dodge ? FLAG_DODGE : 0) |
+        (input.attack ? FLAG_ATTACK : 0) |
+        (input.potion ? FLAG_POTION : 0) |
+        (input.jump ? FLAG_JUMP : 0) |
+        (read.interact ? FLAG_INTERACT : 0);
       const message: ClientMessage = {
         t: 'i',
         d: [
@@ -255,6 +322,12 @@ export class GameConnection {
     };
   }
 
+  /** jumpTime smoothed between fixed steps, so the height doesn't move in visible jumps of its own. */
+  localJumpTime(): number {
+    if (!this.state || !this.previous) return 0;
+    return smoothedJump(this.previous.jumpTime, this.state.jumpTime, this.accumulator / TICK_DT);
+  }
+
   /** Where to draw another player right now. */
   remoteFrame(player: NetPlayer): RemoteFrame | null {
     const { frames } = player;
@@ -270,6 +343,7 @@ export class GameConnection {
           x: a.x + (b.x - a.x) * t,
           z: a.z + (b.z - a.z) * t,
           yaw: lerpAngle(a.yaw, b.yaw, t),
+          jumpTime: smoothedJump(a.jumpTime, b.jumpTime, t),
         };
       }
     }

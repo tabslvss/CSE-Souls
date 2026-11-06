@@ -99,7 +99,7 @@ const GAME_SFX = {
 /** Loaded on entering the game, since these are heard within a second or two of the first fight. */
 const GAME_PRELOAD: readonly GameSfxName[] = [
   'swing-light', 'swing-heavy', 'hit-flesh', 'hit-heavy', 'hit-metal', 'kill-sting', 'kill-thud', 'dodge-roll', 'footstep-dirt',
-  'dust-collect', 'magic-impact', 'cast-magic', 'arrow-hit', 'bow-release', 'hit-player',
+  'dust-collect', 'magic-impact', 'cast-magic', 'arrow-hit', 'bow-release', 'hit-player', 'potion-drink', 'respawn',
 ];
 
 const MAX_VOICES = 24;

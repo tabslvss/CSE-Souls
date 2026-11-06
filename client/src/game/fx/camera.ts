@@ -34,6 +34,10 @@ function noise1(x: number): number {
   return a + (b - a) * smooth;
 }
 
+const SPRING_STIFFNESS = 170;
+const SPRING_DAMPING = 20;
+const SPRING_STEP = 1 / 120;
+
 export class CameraFx {
   /** A settings flag: cuts shake and sway to about a third. Saved in the browser. */
   reduceShake: boolean;
@@ -213,15 +217,19 @@ export class CameraFx {
 
   /** Stiff damped springs, so each kick snaps out and settles back without any bookkeeping. */
   private stepSprings(seconds: number): void {
-    const stiffness = 170;
-    const damping = 20;
-    this.fovVelocity += (-stiffness * this.fov - damping * this.fovVelocity) * seconds;
-    this.fov += this.fovVelocity * seconds;
-    this.pushVelocity += (-stiffness * this.push - damping * this.pushVelocity) * seconds;
-    this.push += this.pushVelocity * seconds;
-    this.recoilVX += (-stiffness * this.recoilX - damping * this.recoilVX) * seconds;
-    this.recoilX += this.recoilVX * seconds;
-    this.recoilVZ += (-stiffness * this.recoilZ - damping * this.recoilVZ) * seconds;
-    this.recoilZ += this.recoilVZ * seconds;
+    // Small fixed steps: one long step on a slow frame makes these springs blow up and throws the camera away.
+    let left = seconds;
+    while (left > 0) {
+      const step = Math.min(left, SPRING_STEP);
+      left -= step;
+      this.fovVelocity += (-SPRING_STIFFNESS * this.fov - SPRING_DAMPING * this.fovVelocity) * step;
+      this.fov += this.fovVelocity * step;
+      this.pushVelocity += (-SPRING_STIFFNESS * this.push - SPRING_DAMPING * this.pushVelocity) * step;
+      this.push += this.pushVelocity * step;
+      this.recoilVX += (-SPRING_STIFFNESS * this.recoilX - SPRING_DAMPING * this.recoilVX) * step;
+      this.recoilX += this.recoilVX * step;
+      this.recoilVZ += (-SPRING_STIFFNESS * this.recoilZ - SPRING_DAMPING * this.recoilVZ) * step;
+      this.recoilZ += this.recoilVZ * step;
+    }
   }
 }

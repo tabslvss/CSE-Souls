@@ -47,12 +47,15 @@ The game is in active development, and the project deadline is December 1, 2026.
 | `W` `A` `S` `D` | Move |
 | Mouse | Look around |
 | `Shift` | Run |
-| `Space` | Dodge |
+| `Space` | Jump |
+| `C` | Dodge roll |
 | Left click | Attack |
+| `1` or `Numpad 1` | Drink a healing potion |
+| `E` | Open a chest |
 | Scroll | Camera distance |
 | `Esc` | Pause |
 
-**Server-authoritative movement.** The server runs the game at 30 ticks per second and sends a snapshot every 2 ticks. Clients send inputs only (sequence number, direction, facing, and run, dodge and attack flags). The server never accepts a position from a client, and an input budget stops a client from moving faster than real time. On top of that, the browser uses three techniques:
+**Server-authoritative movement.** The server runs the game at 30 ticks per second and sends a snapshot every 2 ticks. Clients send inputs only (sequence number, direction, facing, and run, dodge, jump, potion and attack flags). The server never accepts a position from a client, and an input budget stops a client from moving faster than real time. On top of that, the browser uses three techniques:
 
 - **Prediction:** your inputs apply right away, using the same rules the server runs (`shared/sim.ts`).
 - **Reconciliation:** each snapshot says which of your inputs the server has applied. The browser resets to the server's state and replays the inputs not confirmed yet. Small differences fade out over a few frames instead of showing as a jump.

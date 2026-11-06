@@ -3,6 +3,7 @@ import { DEFAULT_APPEARANCE } from '../../../shared/classes';
 import { createCharacter, type CharacterModel } from './characters';
 import { CameraFx } from './fx/camera';
 import { GameFx } from './fx/effects';
+import { FootTrail, landHit, takeHit } from './fx/feel';
 import type { ParticlePool } from './fx/particles';
 import { sound } from '../sound';
 import { PsxRenderer, applyVertexSnap } from './psxRenderer';
@@ -39,6 +40,8 @@ scene.add(ground);
 const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 400);
 const fx = new GameFx(scene, camera);
 const camFx = new CameraFx();
+const parts = { fx, camera: camFx, vhs: psx.vhs };
+const footTrail = new FootTrail(parts, true);
 
 let model: CharacterModel | null = null;
 void createCharacter('duelist', { ...DEFAULT_APPEARANCE, variant: 0 }).then((created) => {
@@ -93,7 +96,6 @@ const collector = () => FEET;
 /** The character crosses the shot, for judging the dust trail and the tape's ghost behind it. */
 let runLeft = 0;
 let runRoll = false;
-let runDust = 0;
 
 const EFFECTS: Record<string, () => void> = {
   'hit-blade': () => { fx.hit(CHEST, Math.PI / 2, 'blade'); shake(0.25, false, false); },
@@ -126,6 +128,8 @@ const EFFECTS: Record<string, () => void> = {
   run: () => { if (model) model.root.position.x = -3; runLeft = 1.1; runRoll = false; model?.play('run'); },
   roll: () => { if (model) model.root.position.x = -3; runLeft = 0.7; runRoll = true; model?.play('dodge', true); psx.vhs.echo(0.7); },
   potion: () => fx.potion(FEET),
+  'feel-kill': () => landHit(parts, CHEST, Math.PI / 2, 'heavy', { kill: true, mine: true }),
+  'feel-hurt': () => takeHit(parts, -Math.PI / 2, 0.4),
 };
 
 function shake(glitch: number, heavy: boolean, kill: boolean): void {
@@ -153,13 +157,9 @@ function step(seconds: number): void {
     runLeft -= scaled;
     const speed = runRoll ? 6.5 : 5;
     model.root.position.x += speed * scaled;
-    runDust += scaled;
-    if (runDust > (runRoll ? 0.07 : 0.17)) {
-      runDust = 0;
-      fx.footDust({ x: model.root.position.x, y: 0, z: 0 }, runRoll ? 'roll' : 'run');
-      psx.vhs.echo(runRoll ? 0.7 : 0.3);
-    }
+    footTrail.update(scaled, model.root.position, runRoll ? 'roll' : 'run');
     if (runLeft <= 0) {
+      footTrail.update(scaled, model.root.position, 'still');
       model.play('idle');
       model.root.position.x = 0;
     }
@@ -230,6 +230,7 @@ window.fxlab = {
   camFx,
   psx,
   sound,
+  camera,
   ready: () => model !== null,
   fire: (name: string) => EFFECTS[name](),
   step,

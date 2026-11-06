@@ -1159,3 +1159,12 @@ img.sigil {
 .avatar--large .avatar__default {
   border-radius: 50%;
 }
+
+/* ---------- Button pictures ---------- */
+
+.input-glyph {
+  display: inline-block;
+  width: 1.75em;
+  height: 1.75em;
+  vertical-align: middle;
+}

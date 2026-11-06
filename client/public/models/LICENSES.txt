@@ -1,5 +1,6 @@
-All 3D assets in this folder are CC0 1.0 (public domain, no attribution required).
-Credits are given on the site's Credits page anyway.
+Most assets in this folder are CC0 1.0 (public domain, no attribution required). The two packs under
+"Forest" marked CC BY are not: they require the credit given here and on the site's Credits page.
+Sounds and particle art are listed at the end, since this file is the one list of everything.
 
 kit-male.glb, kit-female.glb
   Universal Base Characters and Modular Character Outfits - Fantasy, by Quaternius
@@ -18,3 +19,70 @@ weapons.glb
   PSX Weapon Pack, by Amos: https://amos-makes.itch.io/psx-weapon-pack
   LowPoly Fantasy Weapon Pack, by CardinalZebra: https://cardinalzebra.itch.io/low-poly-fantasy-weapon-pack
   Changes: converted to glTF where needed, combined into one file, textures reduced.
+
+animals/wolf.glb, stag.glb, deer.glb, fox.glb, bull.glb
+  Ultimate Animated Animal Pack, by Quaternius (CC0 1.0)
+  https://quaternius.com/packs/ultimateanimatedanimals.html
+  Changes: unused clips removed, animation tracks trimmed and resampled, geometry quantized, colors darkened.
+
+world/forest.glb (Forest)
+  Stylized Nature MegaKit, free Standard tier, by Quaternius (CC0 1.0)
+  https://quaternius.itch.io/stylized-nature-megakit
+  Changes: polygons reduced, leaf cards thinned, textures reduced and darkened, some leaves recolored,
+  stumps and logs cut from trees.
+
+  PSX+ Forest by ju5t1nj https://ju5t1nj.itch.io/
+  PSX+ Forest Pack (CC BY, the page states no version): https://ju5t1nj.itch.io/psx-plus-forest-pack
+  Used for: tree_snag, fern_psx and bark textures. tree_pine_psx, tree_oak_psx, tree_birch_psx, tree_sapling,
+  rock_psx_a, bush_tall and grass_psx are in the file but not placed on the map.
+  Changes: converted from FBX and TGA to glTF, rescaled, textures darkened, plant cards made two-sided.
+
+  Low Poly dead trees, by godgoldfear (CC BY 4.0): https://godgoldfear.itch.io/low-poly-dead-trees
+  tree_dead_a to tree_dead_e are in the file but not placed on the map. Credited because the file ships them.
+  Changes: converted from FBX to glTF, rescaled, texture reduced to 128 px and darkened.
+
+  Nature Kit, by Kenney (CC0 1.0): https://kenney.nl/assets/nature-kit
+  Used for: log_pile. Changes: rescaled and retextured with box-projected bark.
+
+world/castle.glb, world/props.glb
+  Ultimate Modular Ruins Pack, by Quaternius (CC0 1.0): https://quaternius.com/packs/ultimatemodularruins.html
+  Fantasy Props MegaKit, by Quaternius (CC0 1.0): https://quaternius.itch.io/fantasy-props-megakit
+  Medieval Village MegaKit, by Quaternius (CC0 1.0): https://quaternius.itch.io/medieval-village-megakit
+  3D Retro Medieval/Fantasy Building Kit, textures only, by chilly_durango (CC0 1.0):
+  https://chilly-durango.itch.io/medieval-building-parts
+  Castle Kit 2.0, by Kenney (CC0 1.0): https://kenney.nl/assets/castle-kit
+  Changes: converted to glTF, scaled, simplified, merged, textures reduced and darkened.
+
+../textures/ground-*.png
+  Tiny Texture Pack 1, by Screaming Brain Studios (CC0 1.0): https://screamingbrainstudios.itch.io/tiny-texture-pack
+  Retro Textures Fantasy, by Kenney (CC0 1.0): https://kenney.nl/assets/retro-textures-fantasy
+  Changes: darkened, desaturated and resized.
+
+../fx/atlas.png
+  Particle Pack 1.1, by Kenney (CC0 1.0): https://kenney.nl/assets/particle-pack
+  Smoke Particles, by Kenney (CC0 1.0): https://kenney.nl/assets/smoke-particles
+  Changes: regraded, cropped and scaled. Wind, blood and digit sprites were drawn for this project.
+
+../fx/binary.png
+  Drawn for this project by tools/build-fx-atlas.py.
+
+../audio/sfx/game/*.mp3
+  Most of these sounds were generated with ElevenLabs Sound Effects for this project, then trimmed, layered
+  and normalized. They are not CC0: the ElevenLabs terms apply. https://elevenlabs.io/terms-of-use
+  Impact Sounds and RPG Audio, by Kenney (CC0 1.0): https://kenney.nl/assets/impact-sounds and
+  https://kenney.nl/assets/rpg-audio. Used alone in the footsteps and some hits, and layered into others.
+
+../audio/sfx/*
+  Website sounds, generated with ElevenLabs Sound Effects for this project. The ElevenLabs terms apply.
+
+../audio/music/night-vigil.mp3, ancient-rite.mp3
+  "Night Vigil" and "Ancient Rite" by Kevin MacLeod (incompetech.com). Licensed under Creative Commons:
+  By Attribution 4.0. https://creativecommons.org/licenses/by/4.0/
+  Changes: compressed for the web, with a short fade added at each end.
+
+../icons/input/*.svg
+  Input Prompts 1.5A, by Kenney (CC0 1.0): https://kenney.nl/assets/input-prompts
+
+../icons/*.svg
+  By Lorc, Delapouite, Skoll, DarkZaitzev and Caro Asercion, from https://game-icons.net (CC BY 3.0).
+  https://creativecommons.org/licenses/by/3.0/ Changes: recolored for this site.

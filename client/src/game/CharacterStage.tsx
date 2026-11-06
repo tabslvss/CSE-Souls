@@ -11,7 +11,6 @@ export interface StageHandle {
 }
 
 const DRAG_SENSITIVITY = 0.012;
-const SHOW_OFF_SECONDS = 1.1;
 const STARTING_TURN = 0.3;
 
 interface StageState {
@@ -20,7 +19,9 @@ interface StageState {
   camera: THREE.PerspectiveCamera;
   model: CharacterModel | null;
   turn: number;
-  showOffTimer: number;
+  /** Asked for a preview swing, not yet started. */
+  showOffQueued: boolean;
+  showingOff: boolean;
   loadToken: number;
 }
 
@@ -34,7 +35,7 @@ export const CharacterStage = forwardRef<
 
   useImperativeHandle(ref, () => ({
     showOff: () => {
-      if (stateRef.current) stateRef.current.showOffTimer = SHOW_OFF_SECONDS;
+      if (stateRef.current) stateRef.current.showOffQueued = true;
     },
   }));
 
@@ -55,7 +56,7 @@ export const CharacterStage = forwardRef<
     rim.position.set(-3, 3, -4);
     world.scene.add(rim);
 
-    const state: StageState = { psx, world, camera, model: null, turn: STARTING_TURN, showOffTimer: 0, loadToken: 0 };
+    const state: StageState = { psx, world, camera, model: null, turn: STARTING_TURN, showOffQueued: false, showingOff: false, loadToken: 0 };
     stateRef.current = state;
 
     const resize = () => {
@@ -102,10 +103,12 @@ export const CharacterStage = forwardRef<
         // A slow sway, so the character stays facing the player but never looks frozen.
         const sway = dragging ? 0 : Math.sin(time * 0.0005) * 0.22;
         model.root.rotation.y = state.turn + sway;
-        const showingOff = state.showOffTimer > 0;
-        const started = showingOff && state.showOffTimer === SHOW_OFF_SECONDS;
-        state.showOffTimer = Math.max(0, state.showOffTimer - seconds);
-        model.play(showingOff ? 'attack' : 'idle', started);
+        // Each weapon swings for its own length, so the preview ends when the swing does.
+        const started = state.showOffQueued;
+        state.showOffQueued = false;
+        if (started) state.showingOff = true;
+        else if (state.showingOff && model.attackPhase() < 0) state.showingOff = false;
+        model.play(state.showingOff ? 'attack' : 'idle', started);
         model.update(seconds);
       }
       world.update();
@@ -144,6 +147,7 @@ export const CharacterStage = forwardRef<
           state.model.dispose();
         }
         state.model = model;
+        state.showingOff = false;
         state.world.scene.add(model.root);
       },
       // The previous character stays on screen, and the next choice tries the download again.

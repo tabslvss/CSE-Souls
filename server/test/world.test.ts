@@ -17,6 +17,7 @@ import {
   FLAG_ATTACK,
   FLAG_DODGE,
   FLAG_INTERACT,
+  FLAG_JUMP,
   FLAG_POTION,
   FLAG_RUN,
   MAX_FLAGS,
@@ -159,7 +160,7 @@ function stage(options: { camps?: MapCamp[]; chests?: MapChest[]; bonfires?: Map
 let seq = 0;
 function input(partial: Partial<ServerInput> = {}): ServerInput {
   seq += 1;
-  return { seq, mx: 0, mz: 0, yaw: 0, run: false, dodge: false, attack: false, potion: false, interact: false, ...partial };
+  return { seq, mx: 0, mz: 0, yaw: 0, run: false, dodge: false, attack: false, potion: false, jump: false, interact: false, ...partial };
 }
 
 function ofKind<K extends GameEvent['k']>(events: GameEvent[], kind: K): Array<Extract<GameEvent, { k: K }>> {
@@ -707,13 +708,33 @@ describe('creature behavior', () => {
     staged.tick(TICK_RATE);
     assert.ok(herd.every((deer) => deer.mode === Mode.Idle), 'grazing, with the player far off');
 
-    staged.moveTo(player, herd[0].x - OPEN.x - 5, 0);
+    staged.moveTo(player, herd[0].x - OPEN.x - 3, 0);
     staged.tick(4);
     assert.ok(herd.every((deer) => deer.mode === Mode.Flee), 'one seeing the player sets them all off');
     const startDistance = Math.hypot(herd[0].x - player.state.x, herd[0].z - player.state.z);
     staged.tick(TICK_RATE);
     assert.equal(herd[0].visual, CreatureState.Run);
     assert.ok(Math.hypot(herd[0].x - player.state.x, herd[0].z - player.state.z) > startDistance + 3, 'running away');
+  });
+
+  it('prey hears a runner from farther off than a careful walker', () => {
+    const staged = stage({ camps: [staged_camp('deer')] });
+    const player = staged.join('ranger', 0);
+    const deer = staged.world.field.creatures[0];
+    staged.place(deer, 0, 0);
+    // Inside its usual 8 m, but outside the shorter distance for someone walking.
+    staged.moveTo(player, -6, 0);
+    for (let index = 0; index < TICK_RATE; index += 1) {
+      staged.place(deer, 0, 0);
+      staged.world.tick();
+    }
+    assert.equal(deer.mode, Mode.Idle, 'a walker at 6 m goes unnoticed');
+    for (let index = 0; index < 6; index += 1) {
+      staged.world.queueInput(player, { seq: 1000 + index, mx: 0, mz: 1, yaw: 0, run: true, dodge: false, attack: false, potion: false, jump: false, interact: false });
+      staged.place(deer, 0, 0);
+      staged.world.tick();
+    }
+    assert.equal(deer.mode, Mode.Flee, 'a runner at the same spot sets it off');
   });
 
   it('a cornered animal keeps running instead of going home to heal and forgetting who hit it', () => {
@@ -735,14 +756,41 @@ describe('creature behavior', () => {
     assert.equal(deer.health, 10);
   });
 
+  it('prey hears a runner from farther off than a walker, so a careful walk can get close', () => {
+    const staged = stage({ camps: [staged_camp('deer')] });
+    const player = staged.join('ranger', 0);
+    const deer = staged.world.field.creatures[0];
+    staged.moveTo(player, 30, 0);
+    staged.place(deer, 0, 0);
+    staged.tick(TICK_RATE);
+    assert.equal(deer.mode, Mode.Idle);
+    // 6 m is inside the deer's usual 8, but outside the 3.6 it notices a walker at.
+    staged.moveTo(player, deer.x - OPEN.x - 6, 0);
+    player.state.moving = 1;
+    staged.tick(4);
+    assert.equal(deer.mode, Mode.Idle, 'a walker goes unnoticed');
+    player.state.moving = 2;
+    staged.world.queueInput(player, { seq: player.newestSeq + 1, mx: 0, mz: 0, yaw: 0, run: true, dodge: true, attack: false, potion: false, jump: false, interact: false });
+    staged.tick(4);
+    assert.equal(deer.mode, Mode.Flee, 'a dodge roll is loud');
+  });
+
   it('a hit from far off sets a herd running', () => {
     const staged = stage({ camps: [{ ...staged_camp('stag', 3), radius: 3 }] });
     const player = staged.join('ranger', 0);
     const herd = staged.world.field.creatures;
-    herd.forEach((stag, index) => staged.place(stag, index, 25));
+    // Held in place until the arrow lands, since a wandering stag can step out of its line.
+    const hold = () => herd.forEach((stag, index) => staged.place(stag, index, 25));
+    hold();
     staged.tick(TICK_RATE);
+    hold();
     swingUntilHit(staged, player);
-    staged.tick(30);
+    for (let index = 0; index < TICK_RATE && ofKind(staged.events, 'hit').length === 0; index += 1) {
+      hold();
+      staged.tick();
+    }
+    assert.ok(ofKind(staged.events, 'hit').length > 0, 'the arrow should have landed');
+    staged.tick(3);
     assert.ok(herd.every((stag) => stag.mode === Mode.Flee || stag.mode === Mode.Stagger), 'the whole herd reacts');
   });
 
@@ -992,11 +1040,11 @@ describe('inputs', () => {
   it('accepts every flag in the contract, as the right buttons', () => {
     const all = parseInput(message([1, 0, 0, 0, MAX_FLAGS]));
     assert.deepEqual(
-      [all?.run, all?.dodge, all?.attack, all?.potion, all?.interact],
-      [true, true, true, true, true],
+      [all?.run, all?.dodge, all?.attack, all?.potion, all?.interact, all?.jump],
+      [true, true, true, true, true, true],
     );
-    const flags = [FLAG_RUN, FLAG_DODGE, FLAG_ATTACK, FLAG_POTION, FLAG_INTERACT];
-    const names = ['run', 'dodge', 'attack', 'potion', 'interact'] as const;
+    const flags = [FLAG_RUN, FLAG_DODGE, FLAG_ATTACK, FLAG_POTION, FLAG_INTERACT, FLAG_JUMP];
+    const names = ['run', 'dodge', 'attack', 'potion', 'interact', 'jump'] as const;
     flags.forEach((flag, index) => {
       const parsed = parseInput(message([1, 0, 0, 0, flag]));
       for (const [other, name] of names.entries()) assert.equal(parsed?.[name], other === index, `${name} for flag ${flag}`);
@@ -1020,7 +1068,7 @@ describe('inputs', () => {
 
   it('throws away everything but the five input values, so a message can name no target or damage', () => {
     const parsed = parseInput(JSON.stringify({ t: 'i', d: [1, 0, 0, 0, FLAG_ATTACK], dmg: 99999, target: 1, x: 5, z: 5, health: 99999, dust: 99999 }));
-    assert.deepEqual(Object.keys(parsed!).sort(), ['attack', 'dodge', 'interact', 'mx', 'mz', 'potion', 'run', 'seq', 'yaw']);
+    assert.deepEqual(Object.keys(parsed!).sort(), ['attack', 'dodge', 'interact', 'jump', 'mx', 'mz', 'potion', 'run', 'seq', 'yaw']);
   });
 
   it('deals no damage without a swing, and no more damage than swings allow however fast the button is sent', () => {
@@ -1096,6 +1144,11 @@ describe('inputs', () => {
     staged.world.queueInput(player, input({ potion: true }));
     const events = staged.tick();
     assert.deepEqual(ofKind(events, 'drink'), [{ k: 'drink', v: player.id }]);
+    assert.equal(player.state.health, 10, 'the health arrives part way through the drink');
+    for (let index = 0; index < TICK_RATE; index += 1) {
+      staged.world.queueInput(player, input({}));
+      staged.tick();
+    }
     assert.ok(player.state.health > 10);
   });
 });

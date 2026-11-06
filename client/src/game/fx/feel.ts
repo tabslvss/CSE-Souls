@@ -1,7 +1,7 @@
 import type { VhsControls } from '../psxRenderer';
 import { sound, type FootSurface } from '../../sound';
 import type { CameraFx } from './camera';
-import { styleName, type FootDustKind, type GameFx, type HitMaterial, type Position, type StyleRef } from './effects';
+import { styleName, type GameFx, type HitMaterial, type Position, type StyleRef } from './effects';
 
 /*
  * One call per game event, so every hit gets the same picture, sound, camera and tape together.
@@ -49,7 +49,8 @@ export function takeHit(parts: FeelParts, fromYaw: number, share: number): void 
 
 export type MoveKind = 'still' | 'walk' | 'run' | 'roll';
 
-const STEP_SECONDS: Record<MoveKind, number> = { still: 0, walk: 0.47, run: 0.3, roll: 0.075 };
+// Seconds between puffs. Running puffs twice per footfall, or the trail reads as separate balls.
+const PUFF_SECONDS: Record<MoveKind, number> = { still: 0, walk: 0.47, run: 0.15, roll: 0.075 };
 
 /**
  * Dust and footsteps for one character, driven by how it is moving now. Keep one per character and
@@ -59,7 +60,7 @@ const STEP_SECONDS: Record<MoveKind, number> = { still: 0, walk: 0.47, run: 0.3,
 export class FootTrail {
   private last: MoveKind = 'still';
   private wait = 0;
-  private dustKind: FootDustKind = 'walk';
+  private puffs = 0;
 
   constructor(
     private readonly parts: FeelParts,
@@ -83,10 +84,12 @@ export class FootTrail {
     }
     this.wait -= seconds;
     if (this.wait > 0) return;
-    this.wait = STEP_SECONDS[kind];
-    this.dustKind = kind;
-    this.parts.fx.footDust(feet, this.dustKind);
-    if (kind !== 'roll') sound.footstep(surface, { x: feet.x, z: feet.z, running: kind === 'run' });
+    this.wait = PUFF_SECONDS[kind];
+    this.parts.fx.footDust(feet, kind);
+    this.puffs += 1;
+    if (kind === 'walk' || (kind === 'run' && this.puffs % 2 === 0)) {
+      sound.footstep(surface, { x: feet.x, z: feet.z, running: kind === 'run' });
+    }
     if (this.mine) this.parts.vhs.echo(kind === 'roll' ? 0.8 : kind === 'run' ? 0.3 : 0);
   }
 }

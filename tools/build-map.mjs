@@ -62,7 +62,20 @@ function rect(x, z, hw, hd, yaw = 0) {
 }
 const fire = (x, y, z, size) => fires.push(round(x), round(y), round(z), round(size));
 const spire = (x, y, z, radius, height) => spires.push(round(x), round(y), round(z), round(radius), round(height));
-const castle = (node, ...rest) => prop('castle', node, ...rest);
+function castle(node, x, z, yaw = 0, scale = 1, options) {
+  // The large rubble model is bricks stacked with overhangs, which look like they're floating.
+  // A low spread of small piles, all flat on the ground, reads better as a heap.
+  if (node === 'rubble_large') {
+    const across = Math.cos(yaw) * 1.1 * scale;
+    const along = Math.sin(yaw) * 1.1 * scale;
+    castle('rubble_small', x, z, yaw, scale * 1.2);
+    castle('rubble_small', x + across, z - along, yaw + 2.1, scale * 0.9);
+    castle('rocks_small', x - across, z + along, yaw + 4.2, scale * 0.8);
+    castle('rocks_small', x + along, z + across, yaw + 1, scale * 0.7);
+    return;
+  }
+  prop('castle', node, x, z, yaw, scale, options);
+}
 const props = (node, ...rest) => prop('props', node, ...rest);
 const forest = (node, ...rest) => prop('forest', node, ...rest);
 
@@ -621,19 +634,22 @@ function lantern(x, z) {
 }
 
 function hut() {
-  // Three rough walls and a lean-to, open to the south where the path comes in.
+  // Three solid walls under one thatched roof, open to the south where the path comes in. It's
+  // square and centered under the roof's peak, so that no wall or corner pokes through.
   const s = 0.72;
   const x = 190;
   const z = -40;
-  wallRun(x - 4.3, z - 4.3, x + 4.3, z - 4.3, { scale: s, pick: () => 'wall' });
-  wallRun(x - 4.3, z + 2, x - 4.3, z - 4.3, { scale: s, pick: (i) => (i === 0 ? 'wall_ruin_low' : 'wall') });
-  wallRun(x + 4.3, z - 4.3, x + 4.3, z + 2, { scale: s, pick: (i) => (i === 0 ? 'wall' : 'wall_ruin') });
-  castle('pillar_buttress', x - 4.3, z - 4.3, 0, s);
-  castle('pillar_buttress', x + 4.3, z - 4.3, 0, s);
-  // A low peaked roof, so that it reads as somebody's home and not as one more ruin.
-  spire(x, 3.9, z - 1.2, 7, 3.6);
-  castle('pillar_buttress', x - 4.3, z + 2, 0, s);
-  castle('pillar_buttress', x + 4.3, z + 2, 0, s);
+  const half = 4.3;
+  wallRun(x - half, z - half, x + half, z - half, { scale: s, pick: () => 'wall' });
+  wallRun(x - half, z + half, x - half, z - half, { scale: s, pick: () => 'wall' });
+  wallRun(x + half, z - half, x + half, z + half, { scale: s, pick: () => 'wall' });
+  // Shorter than the walls, because the roof slopes down over the corners.
+  const postScale = 0.65;
+  for (const [px, pz] of [[-half, -half], [half, -half], [-half, half], [half, half]]) {
+    castle('pillar_buttress', x + px, z + pz, 0, postScale);
+  }
+  // Rests just below the top of the walls and overhangs them, so it hides where they meet.
+  spire(x, 4.2, z, 5 * Math.SQRT2, 2.6);
   // A fire left burning beside the chest, the only thing lit for a long way around.
   props('torch_iron', x + 1.7, z - 2.4, 0, 1);
   circle(x + 1.7, z - 2.4, 0.2);

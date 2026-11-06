@@ -389,7 +389,7 @@ function legalRunSpeed(derived: Derived): number {
   for (const x of [0, 40, -40, 80, -80, 120, -120, 160, -160]) {
     state.x = x;
     state.z = MAP.spawn.z;
-    stepPlayer(state, { seq: 1, mx: 1, mz: 0, yaw: 0, run: true, dodge: false, attack: false, potion: false }, derived);
+    stepPlayer(state, { seq: 1, mx: 1, mz: 0, yaw: 0, run: true, dodge: false, attack: false, potion: false, jump: false }, derived);
     best = Math.max(best, Math.abs(state.x - x) / TICK_DT);
     state.stamina = derived.maxStamina;
   }
@@ -406,7 +406,7 @@ function openDirection(x: number, z: number, derived: Derived): [number, number]
     const mz = Math.cos(angle);
     const state = createState(x, z, derived);
     for (let step = 0; step < TICK_RATE * 4; step += 1) {
-      stepPlayer(state, { seq: step, mx, mz, yaw: 0, run: true, dodge: false, attack: false, potion: false }, derived);
+      stepPlayer(state, { seq: step, mx, mz, yaw: 0, run: true, dodge: false, attack: false, potion: false, jump: false }, derived);
       state.stamina = derived.maxStamina;
     }
     const distance = Math.hypot(state.x - x, state.z - z);
@@ -818,7 +818,7 @@ describe('movement', () => {
     const expected = createState(start[1], start[2], derived);
     const count = 20;
     for (let seq = 1; seq <= count; seq += 1) {
-      const input: SimInput = { seq, mx: 0.6, mz: -0.8, yaw: 1.25, run: seq > 10, dodge: false, attack: false, potion: false };
+      const input: SimInput = { seq, mx: 0.6, mz: -0.8, yaw: 1.25, run: seq > 10, dodge: false, attack: false, potion: false, jump: false };
       stepPlayer(expected, input, derived);
       socket.input(seq, input.mx, input.mz, input.yaw, input.run ? FLAG_RUN : 0);
       await sleep(1000 / TICK_RATE);

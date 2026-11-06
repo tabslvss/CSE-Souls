@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
-import type { AnimationId } from '../../../shared/sim';
+import { DODGE_SECONDS, type AnimationId } from '../../../shared/sim';
 import type { AttackKey, AxisName, Ease, HeldItem, ItemPose, Pose, Vec3, WeaponSetup } from './attacks/types';
 import { animateOpenBook, createOpenBook } from './openBook';
+import { createQuiver } from './quiver';
+import { createShieldStraps } from './shieldStraps';
 
 /*
  * Runs after the animation clips each frame. The clips give a starting point, then this moves the
@@ -21,6 +23,14 @@ type Hand = 'r' | 'l';
 const PALM_ALONG_HAND = 0.68;
 const PALM_DEPTH = 0.03;
 const DEFAULT_TILT_DEGREES = 20;
+/** How far apart the clip's knees are, in meters, at a full stride. */
+const GAIT_FULL_STRIDE = 0.45;
+/** How far the hands move for each radian the shoulders swing while walking or running. */
+const GAIT_HAND_SWING = 0.3;
+const GAIT_OFF_SWING = 0.07;
+/** How far a carried weapon's head rocks for each radian of that swing. */
+const GAIT_ROCK = 0.6;
+
 /** How much of the wrist's roll the forearm takes, so that the wrist doesn't look wrung out. */
 const FOREARM_ROLL_SHARE = 0.5;
 const ELBOW_FOLLOWS_WRIST = 0.5;
@@ -29,6 +39,26 @@ const FOREARM_TWIST_RATE = 30;
 const ARROW_LENGTH = 0.85;
 const DRAW_LENGTH = 0.32;
 const ARROW_FILE_AXIS: AxisName = '+y';
+const ARROW_UP = new THREE.Vector3(0, 1, 0);
+const ARROW_FORWARD = new THREE.Vector3(0, 0, 1);
+/** How far down the shaft the fingers hold an arrow coming out of the quiver, so that its tip is still inside. */
+const ARROW_HELD_AT = 0.4;
+/** How far toward the string an arrow has come by the time it has left the quiver's line. */
+const ARROW_FREE_AT = 0.15;
+/** How much the limbs bend at full draw: the tips come back this share of the string's depth, and closer by this share. */
+const BOW_FLEX_DEPTH = 0.75;
+const BOW_FLEX_HEIGHT = 0.07;
+/** The limbs are a stiff spring: they follow the string, then shiver on the release. */
+const BOW_FLEX_STIFFNESS = 1500;
+const BOW_FLEX_DAMPING = 13;
+/** How high the free hand has to be, from the chest, for an archer's elbow to be all the way up. */
+const BOW_ELBOW_UP_HEIGHT = 0.2;
+/** How far the drawing hand rolls around its own length at full draw. */
+const BOW_DRAW_HAND_ROLL = -1;
+/** Where the quiver is worn, as [left, up, forward] from the origin. Tipped back and out, clear of the swinging arm. */
+const QUIVER_AT: readonly [number, number, number] = [-0.25, 1.07, -0.22];
+const QUIVER_TIP_BACK = -0.25;
+const QUIVER_TIP_OUT = -0.04;
 
 const SPINE_NAMES = ['spine_01', 'spine_02', 'spine_03'];
 const SPINE_SHARE = [0.25, 0.35, 0.4];
@@ -49,6 +79,10 @@ const CLAVICLE_MAX_ANGLE = 0.42;
 
 const TRANSITION_SECONDS = 0.2;
 const ATTACK_TRANSITION_SECONDS = 0.1;
+/** Going back to the stance after an attack is a slow recovery, long enough for the feet to step home. */
+const RECOVER_TRANSITION_SECONDS = 0.36;
+/** Long enough for a raised weapon to drop in an arc into the run instead of snapping there. */
+const RUN_TRANSITION_SECONDS = 0.3;
 const DEATH_TRANSITION_SECONDS = 0.3;
 const HIT_TRANSITION_SECONDS = 0.1;
 const SECOND_HAND_RATE = 22;
@@ -59,9 +93,36 @@ const BREATH_RATE = 1.75;
 const BREATH_CHEST = 0.014;
 const BREATH_RISE = 0.006;
 const BREATH_HIPS = 0.004;
+/** A planted foot further than this from where it's going lifts and steps there. */
+const STEP_MIN_DISTANCE = 0.05;
+const STEP_FULL_DISTANCE = 0.1;
+const STEP_LIFT = 0.14;
+/** When two feet step, the second one leaves at this share of the way through the first one's move. */
+const STEP_SECOND_FOOT_AT = 0.42;
+/** The slow movements a StanceLife adds, in radians per second: about 3 and 6 seconds to the loop. */
+const LIFE_SINK_RATE = 2.1;
+const LIFE_SHIFT_RATE = 1.05;
+const LIFE_RESETTLE_RATE = 0.8;
+/** How far the weapon's drift comes after the chest's, in radians of that loop. */
+const LIFE_DRIFT_DELAY = 0.9;
+/** How slowly a carried hand follows the body's rise and fall, and how much it rocks the weapon with it. */
+const LAG_SECONDS = 0.16;
+const LAG_ROCK = 1.5;
+const BOB_AVERAGE_SECONDS = 1;
+const GAIT_BLEND_RATE = 8;
+/** Where the run clip's steps are centered, front to back, in the model. */
+const RUN_STRIDE_MIDDLE = -0.1;
+/** How high the ankle gets with the toes still on the floor. */
+const RUN_HEEL_LIFT = 0.1;
+/** Where the head looks when a stance asks it to stay steady through a run, upward from level, in radians. */
+const RUN_HEAD_GAZE = 0.12;
 
 /** Where the free hand raises a drink, from the chest. It lines up with the mouth. */
-const MOUTH: Vec3 = [0, 0.33, 0.2];
+const MOUTH: Vec3 = [0, 0.31, 0.26];
+const DRINK_HEAD_BACK = -0.65;
+const DRINK_LEAN_BACK = -0.07;
+/** How far the flask tips over at the lips, in radians. Past level, so the last of it runs out. */
+const FLASK_TIP = -1.95;
 const DRINK_WEAPON: ItemPose = { grip: [0.3, -0.36, 0.12], head: [0.25, 0.3, 0.92], edge: [0, -0.95, 0.3] };
 
 const X_AXIS = new THREE.Vector3(1, 0, 0);
@@ -149,7 +210,10 @@ const enum C {
   SECOND_HAND = 34,
   STEADY = 35,
   BREATH = 36,
-  COUNT = 37,
+  // Bow only: above 0 an arrow is in the drawing hand, and at 1 it's on the string.
+  NOCK = 37,
+  HEAD_PITCH = 38,
+  COUNT = 39,
 }
 
 /** Channels that travel along a spline: [first channel, how many make up one point]. */
@@ -217,8 +281,10 @@ function applyFields(frame: Frame, pose: Partial<Pose>, secondHand: number): voi
   if (pose.turn !== undefined) ch[C.TURN] = pose.turn;
   if (pose.lean !== undefined) ch[C.LEAN] = pose.lean;
   if (pose.headFollow !== undefined) ch[C.HEAD] = pose.headFollow;
+  if (pose.headPitch !== undefined) ch[C.HEAD_PITCH] = pose.headPitch;
   if (pose.reach !== undefined) ch[C.REACH] = pose.reach;
   if (pose.draw !== undefined) ch[C.DRAW] = pose.draw;
+  if (pose.nock !== undefined) ch[C.NOCK] = pose.nock;
   if (pose.footL) setFoot(ch, C.FOOT_L, pose.footL);
   if (pose.footR) setFoot(ch, C.FOOT_R, pose.footR);
   if (pose.toeL !== undefined) ch[C.FOOT_L + 3] = pose.toeL;
@@ -285,6 +351,8 @@ interface CompiledSetup {
   dodge: Frame;
   hit: Frame;
   drink: Frame;
+  /** Legs and hips left to the clips, and the weapon held as it is standing. */
+  jump: Frame;
   /** Every limb goes limp to the clip. */
   death: Frame;
   attacks: CompiledAttack[];
@@ -298,6 +366,15 @@ function clearBody(frame: Frame): Frame {
   ch[C.FOOT_R + 4] = 0;
   ch[C.BREATH] = 0;
   ch[C.STEADY] = 0;
+  return frame;
+}
+
+/** The items' place during a roll, for a weapon that names one. */
+function rollFrame(setup: WeaponSetup, frame: Frame): Frame {
+  if (setup.roll) {
+    setItemPose(frame, C.GRIP, frame.main, setup.roll.main);
+    if (setup.roll.off) setItemPose(frame, C.OFF, frame.off, setup.roll.off);
+  }
   return frame;
 }
 
@@ -335,9 +412,10 @@ function compileSetup(setup: WeaponSetup): CompiledSetup {
   const idle = stanceFrame(setup, stance.idle, offStance?.idle, 1);
   const walk = stanceFrame(setup, stance.walk, offStance?.walk ?? offStance?.idle, 0.3);
   const run = stanceFrame(setup, stance.run ?? stance.idle, offStance?.run ?? offStance?.idle, 0);
+  if (setup.life?.runSteady !== undefined) run.ch[C.STEADY] = setup.life.runSteady;
   const hasOff = setup.items.length > 1;
   const drink = clearBody(copyFrame(idle, makeFrame()));
-  // A free hand raises the drink, or else the main arm goes along with the clip.
+  // With both hands full the weapon hand puts its weapon away for the sip. Otherwise the other hand is free.
   if (hasOff) drink.ch[C.MAIN_WEIGHT] = 0;
   else {
     // The weapon comes down and out of the way, in the hand that's left.
@@ -347,11 +425,11 @@ function compileSetup(setup: WeaponSetup): CompiledSetup {
       head: [side * DRINK_WEAPON.head[0], DRINK_WEAPON.head[1], DRINK_WEAPON.head[2]],
       edge: DRINK_WEAPON.edge,
     });
-    drink.ch[C.SECOND_HAND] = 0;
-    drink.ch[C.TURN] = 0;
-    drink.ch[C.FREE_WEIGHT] = 1;
-    drink.ch[C.FREE_FINGERS] = 0.7;
   }
+  drink.ch[C.SECOND_HAND] = 0;
+  drink.ch[C.TURN] = 0;
+  drink.ch[C.FREE_WEIGHT] = 1;
+  drink.ch[C.FREE_FINGERS] = 0.7;
   const death = clearBody(copyFrame(idle, makeFrame()));
   death.ch[C.TURN] = 0;
   death.ch[C.MAIN_WEIGHT] = 0;
@@ -362,9 +440,10 @@ function compileSetup(setup: WeaponSetup): CompiledSetup {
     idle,
     walk,
     run,
-    dodge: clearBody(copyFrame(run, makeFrame())),
+    dodge: rollFrame(setup, clearBody(copyFrame(run, makeFrame()))),
     hit: clearBody(copyFrame(idle, makeFrame())),
     drink,
+    jump: clearBody(copyFrame(idle, makeFrame())),
     death,
     attacks: setup.attacks.map((attack) => {
       const keys = attack.keys;
@@ -418,7 +497,11 @@ function splineInto(
   let dt0 = Math.sqrt(Math.sqrt(ab));
   let dt1 = Math.sqrt(Math.sqrt(bc));
   let dt2 = Math.sqrt(Math.sqrt(cd));
-  if (dt1 < 1e-4) dt1 = 1;
+  // A key that repeats the last one is a hold, and the curve has nowhere to go.
+  if (dt1 < 1e-4) {
+    for (let i = start; i < start + size; i += 1) to[i] = b[i];
+    return;
+  }
   if (dt0 < 1e-4) dt0 = dt1;
   if (dt2 < 1e-4) dt2 = dt1;
   const u2 = u * u;
@@ -444,18 +527,31 @@ function splineRotation(
   const sa = a.dot(b) < 0 ? -1 : 1;
   const sc = c.dot(b) < 0 ? -1 : 1;
   const sd = d.dot(c) * sc < 0 ? -1 : 1;
+  // Spaced by distance like the points are: evenly spaced, a huge strike after a hold makes the hold twitch.
+  const ax = a.x * sa, ay = a.y * sa, az = a.z * sa, aw = a.w * sa;
+  const cx = c.x * sc, cy = c.y * sc, cz = c.z * sc, cw = c.w * sc;
+  const dx = d.x * sd, dy = d.y * sd, dz = d.z * sd, dw = d.w * sd;
+  let dt0 = Math.sqrt(Math.hypot(b.x - ax, b.y - ay, b.z - az, b.w - aw));
+  let dt1 = Math.sqrt(Math.hypot(cx - b.x, cy - b.y, cz - b.z, cw - b.w));
+  let dt2 = Math.sqrt(Math.hypot(dx - cx, dy - cy, dz - cz, dw - cw));
+  if (dt1 < 1e-4) {
+    to.copy(b);
+    return;
+  }
+  if (dt0 < 1e-4) dt0 = dt1;
+  if (dt2 < 1e-4) dt2 = dt1;
   const u2 = u * u;
   const u3 = u2 * u;
-  const wa = 0.5 * (-u3 + 2 * u2 - u) * sa;
-  const wb = 0.5 * (3 * u3 - 5 * u2 + 2);
-  const wc = 0.5 * (-3 * u3 + 4 * u2 + u) * sc;
-  const wd = 0.5 * (u3 - u2) * sd;
-  to.set(
-    wa * a.x + wb * b.x + wc * c.x + wd * d.x,
-    wa * a.y + wb * b.y + wc * c.y + wd * d.y,
-    wa * a.z + wb * b.z + wc * c.z + wd * d.z,
-    wa * a.w + wb * b.w + wc * c.w + wd * d.w,
-  ).normalize();
+  const h0 = 2 * u3 - 3 * u2 + 1;
+  const h1 = (u3 - 2 * u2 + u) * dt1;
+  const h2 = -2 * u3 + 3 * u2;
+  const h3 = (u3 - u2) * dt1;
+  const along = (pa: number, pb: number, pc: number, pd: number) =>
+    h0 * pb +
+    h1 * ((pb - pa) / dt0 - (pc - pa) / (dt0 + dt1) + (pc - pb) / dt1) +
+    h2 * pc +
+    h3 * ((pc - pb) / dt1 - (pd - pb) / (dt1 + dt2) + (pd - pc) / dt2);
+  to.set(along(ax, b.x, cx, dx), along(ay, b.y, cy, dy), along(az, b.z, cz, dz), along(aw, b.w, cw, dw)).normalize();
 }
 
 /* Limbs. */
@@ -574,11 +670,15 @@ function solveLimb(
     let roll = 2 * Math.atan2(relative.y, relative.w);
     if (roll > Math.PI) roll -= Math.PI * 2;
     else if (roll < -Math.PI) roll += Math.PI * 2;
-    limb.roll = roll;
+    // Weighted, so that a hand that has nearly let go doesn't read as a wrung wrist.
+    limb.roll = roll * weight;
     // The hand is always exact, so the forearm can follow softly, and past half a turn it goes around.
     limb.twist += (roll * rollShare - limb.twist) * twistBlend;
     q4.set(0, Math.sin(limb.twist / 2), 0, Math.cos(limb.twist / 2));
     lowerWorld.multiply(q4);
+  } else {
+    // A hand with nothing to line up has no wrist roll, and the reading shouldn't stay at its last value.
+    limb.roll = 0;
   }
 
   // Into each bone's own parent frame, blended with what the clip had.
@@ -623,6 +723,7 @@ interface Leg {
   ankleBehind: number;
   // What the clip wanted this frame, in world space.
   clipAnkle: THREE.Vector3;
+  clipBall: THREE.Vector3;
   clipKnee: THREE.Vector3;
   clipHip: THREE.Vector3;
   clipThigh: THREE.Quaternion;
@@ -664,6 +765,54 @@ export interface WeaponRig {
   dispose: () => void;
 }
 
+// Every character holding the same weapon shares one reshaped copy, and it stays for the life of the page.
+const reshapedGeometry = new WeakMap<THREE.BufferGeometry, THREE.BufferGeometry>();
+
+/** Gives a model a bigger head and a different handle. The head grows down the handle, so its length stays the same. */
+function applyReshape(object: THREE.Object3D, spec: HeldItem): void {
+  const shape = spec.reshape!;
+  const head = axisVector(spec.head);
+  const edge = axisVector(spec.edge);
+  const side = new THREE.Vector3().crossVectors(head, edge);
+  object.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    let geometry = reshapedGeometry.get(mesh.geometry);
+    if (!geometry) {
+      geometry = mesh.geometry.clone();
+      const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
+      const point = new THREE.Vector3();
+      let butt = Infinity;
+      let tip = -Infinity;
+      for (let i = 0; i < positions.count; i += 1) {
+        const along = point.fromBufferAttribute(positions, i).dot(head);
+        butt = Math.min(butt, along);
+        tip = Math.max(tip, along);
+      }
+      const headStart = butt + shape.headFrom * (tip - butt);
+      for (let i = 0; i < positions.count; i += 1) {
+        point.fromBufferAttribute(positions, i);
+        const along = point.dot(head);
+        const across = point.dot(side);
+        const toEdge = point.dot(edge);
+        // The handle runs up through the head. Keeping that part thin stops the handle flaring out to meet the head.
+        const isHead = along >= headStart && Math.abs(toEdge) > shape.neck;
+        point
+          .copy(head)
+          .multiplyScalar(along >= headStart ? tip + (along - tip) * shape.head[1] : along)
+          .addScaledVector(side, across * (isHead ? shape.head[0] : shape.handle))
+          .addScaledVector(edge, toEdge * (isHead ? shape.head[2] : shape.handle));
+        positions.setXYZ(i, point.x, point.y, point.z);
+      }
+      geometry.computeVertexNormals();
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      reshapedGeometry.set(mesh.geometry, geometry);
+    }
+    mesh.geometry = geometry;
+  });
+}
+
 /** Builds an item, sized and turned so its grip point sits in the palm. */
 function makeItem(
   file: GLTF,
@@ -675,6 +824,7 @@ function makeItem(
   const source = built ? createOpenBook() : file.scene.getObjectByName(spec.id);
   if (!source) return null;
   const object = built ? source : source.clone(true);
+  if (spec.reshape) applyReshape(object, spec);
   object.position.set(0, 0, 0);
   object.rotation.set(0, 0, 0);
   object.scale.set(1, 1, 1);
@@ -721,6 +871,7 @@ function makeItem(
   );
   const holder = new THREE.Group();
   holder.add(object);
+  if (spec.straps) holder.add(createShieldStraps(adopt));
   holder.quaternion.copy(gripRotation);
   holder.position.copy(palm);
   const headLength = headSize * scale;
@@ -755,11 +906,13 @@ function makeArm(model: THREE.Object3D, hand: Hand): Arm | null {
       fingers.push({ bone, rest: bone.quaternion.clone(), axis: X_AXIS.clone(), angle: THREE.MathUtils.degToRad(angle) });
     });
   }
-  // The thumb swings across the palm first, then its tip closes over the fingers.
+  // The thumb swings across the palm first, then its tip closes over the fingers. The left hand's bones
+  // mirror the right's across X, and mirroring a turn keeps its axis's X and flips the other two.
+  const mirror = hand === 'r' ? 1 : -1;
   const thumbAxes: [Vec3, number][] = [
-    [[0.2, 0.75, hand === 'r' ? 0.6 : -0.6], 42],
-    [[hand === 'r' ? -1 : 1, 0, 0], 45],
-    [[hand === 'r' ? -1 : 1, 0, 0], 55],
+    [[0.2, 0.75 * mirror, 0.6 * mirror], 42],
+    [[-1, 0, 0], 45],
+    [[-1, 0, 0], 55],
   ];
   thumbAxes.forEach(([axis, angle], joint) => {
     const bone = model.getObjectByName(`thumb_0${joint + 1}_${hand}`);
@@ -792,6 +945,7 @@ function makeLeg(model: THREE.Object3D, hand: Hand): Leg | null {
     ankleAbove: ankleAt.y - ballAt.y,
     ankleBehind: ballAt.z - ankleAt.z,
     clipAnkle: new THREE.Vector3(),
+    clipBall: new THREE.Vector3(),
     clipKnee: new THREE.Vector3(),
     clipHip: new THREE.Vector3(),
     clipThigh: new THREE.Quaternion(),
@@ -809,6 +963,34 @@ function bodyTurn(turnRight: number, forward: number, roll: number, body: THREE.
   euler.set(forward, -turnRight, roll);
   to.setFromEuler(euler).premultiply(body).multiply(q6.copy(body).invert());
   return to;
+}
+
+/** How far the flask and head are tipped back, through the drink from 0 to 1. The health arrives in the middle of this. */
+function drinkTipAt(d: number): number {
+  return smoothStep(0.28, 0.45, d) * (1 - smoothStep(0.68, 0.84, d));
+}
+
+/** A small stoppered flask. Its origin is where the hand holds it, and its neck is along +Y. */
+function createFlask(adopt: (mesh: THREE.Mesh) => void): THREE.Group {
+  const group = new THREE.Group();
+  const outline = [
+    [0.001, -0.055],
+    [0.032, -0.052],
+    [0.045, -0.022],
+    [0.04, 0.012],
+    [0.016, 0.038],
+    [0.014, 0.068],
+  ].map(([x, y]) => new THREE.Vector2(x, y));
+  const parts: [THREE.BufferGeometry, number][] = [
+    [new THREE.LatheGeometry(outline, 6), 0xc8892c],
+    [new THREE.CylinderGeometry(0.018, 0.015, 0.026, 6).translate(0, 0.08, 0), 0x6e4e2e],
+  ];
+  for (const [geometry, color] of parts) {
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color, side: THREE.DoubleSide }));
+    adopt(mesh);
+    group.add(mesh);
+  }
+  return group;
 }
 
 export function createWeaponRig(
@@ -852,10 +1034,25 @@ export function createWeaponRig(
   const mainArm = arms[setup.items[0].hand];
   const otherHand: Hand = setup.items[0].hand === 'r' ? 'l' : 'r';
   const otherArm = arms[otherHand];
+  const drinkHand: Hand = offItem ? setup.items[0].hand : otherHand;
+  const drinkArm = arms[drinkHand];
+
+  let flask: THREE.Group | null = null;
+  const flaskScale = new THREE.Vector3(1, 1, 1);
+  if (drinkArm) {
+    flask = createFlask(adopt);
+    const handScale = drinkArm.limb.end.getWorldScale(new THREE.Vector3());
+    flaskScale.set(1 / handScale.x, 1 / handScale.y, 1 / handScale.z);
+    flask.position.copy(drinkArm.palm);
+    flask.visible = false;
+    drinkArm.limb.end.add(flask);
+  }
 
   // Bow extras: the string, drawn as a line so it stays one pixel wide, and the nocked arrow.
   let bowString: THREE.Line | null = null;
   let arrow: THREE.Object3D | null = null;
+  let bowLimbs: THREE.Group | null = null;
+  let quiver: THREE.Group | null = null;
   let braceDepth = 0;
   let bowTip = 0;
   if (setup.bow && mainItem) {
@@ -887,6 +1084,20 @@ export function createWeaponRig(
     bowString = new THREE.Line(geometry, material);
     bowString.frustumCulled = false;
     mainItem.holder.add(bowString);
+
+    // A wrapper around the grip, so that the limbs can bend without touching the string or the hand.
+    bowLimbs = new THREE.Group();
+    mainItem.holder.add(bowLimbs);
+    bowLimbs.add(object);
+
+    // Placed from the model's frame into the pelvis's, so that it rides on the hips from then on.
+    quiver = createQuiver(adopt);
+    quiver.position.set(...QUIVER_AT);
+    quiver.rotation.set(QUIVER_TIP_BACK, 0, QUIVER_TIP_OUT);
+    model.updateWorldMatrix(true, true);
+    quiver.updateMatrix();
+    quiver.applyMatrix4(new THREE.Matrix4().copy(pelvis.matrixWorld).invert().multiply(model.matrixWorld));
+    pelvis.add(quiver);
 
     const arrowItem = makeItem(
       file,
@@ -929,6 +1140,8 @@ export function createWeaponRig(
   const carriedOff = new THREE.Quaternion();
   let carryAge = 1;
   let carrySeconds = TRANSITION_SECONDS;
+  const stepFrom = new Float32Array(C.COUNT);
+  let carryIsStep = false;
   let source: AnimationId | null = 'idle';
   let needsCarry = false;
 
@@ -936,17 +1149,32 @@ export function createWeaponRig(
   let attackIndex = 0;
   let attacking = false;
   let drinkClock = 0;
+  let dodgeClock = 0;
+  let gaitTurn = 0;
   let bowHands = 0;
   let handDraw = 0;
   let lastDraw = 0;
+  let bowFlex = 0;
+  let bowFlexSpeed = 0;
+  let arrowDrawn = false;
   let stretch = 0;
   let legStretch = 0;
   let clock = 0;
   const breathPhase = Math.random() * Math.PI * 2;
+  const life = setup.life;
+  // Walking and running: how far along each is, and the averages that the rise and fall are measured from.
+  let gaitBlend = 0;
+  let runBlend = 0;
+  let pelvisAverage = -1;
+  let chestAverage = -1;
+  let carryLag = 0;
+  let frameSeconds = 0;
 
   // Scratch space for the body pass. The limb solver has its own at the top of this file.
   const modelRotation = new THREE.Quaternion();
   const bodyRotation = new THREE.Quaternion();
+  const bodyBend = new THREE.Quaternion();
+  const drawHand = new THREE.Quaternion();
   const chestAt = new THREE.Vector3();
   const pelvisAt = new THREE.Vector3();
   const pelvisRotation = new THREE.Quaternion();
@@ -960,6 +1188,29 @@ export function createWeaponRig(
   const limbTarget = new THREE.Vector3();
   const limbPole = new THREE.Vector3();
   const limbRotation = new THREE.Quaternion();
+
+  /**
+   * Feet moved a long way by a blend would slide across the floor. This lifts them instead, the one
+   * with further to go first, so that the blend reads as a step or two. `to` holds the blend so far.
+   */
+  const stepFeet = (to: Float32Array, from: Float32Array, target: Float32Array, u: number) => {
+    const farL = Math.hypot(from[C.FOOT_L] - target[C.FOOT_L], from[C.FOOT_L + 1] - target[C.FOOT_L + 1]);
+    const farR = Math.hypot(from[C.FOOT_R] - target[C.FOOT_R], from[C.FOOT_R + 1] - target[C.FOOT_R + 1]);
+    const bothStep = farL >= STEP_MIN_DISTANCE && farR >= STEP_MIN_DISTANCE;
+    for (let side = 0; side < 2; side += 1) {
+      const foot = side === 0 ? C.FOOT_L : C.FOOT_R;
+      const far = side === 0 ? farL : farR;
+      if (far < STEP_MIN_DISTANCE || target[foot + 4] < 0.5 || from[foot + 4] < 0.5) continue;
+      const second = bothStep && (side === 0 ? farL < farR : farR <= farL);
+      const part = !bothStep ? u : second ? (u - STEP_SECOND_FOOT_AT) / (1 - STEP_SECOND_FOOT_AT) : u / (1 - STEP_SECOND_FOOT_AT);
+      const v = Math.min(1, Math.max(0, part));
+      const moved = v * v * (3 - 2 * v);
+      to[foot] = from[foot] + (target[foot] - from[foot]) * moved;
+      to[foot + 1] = from[foot + 1] + (target[foot + 1] - from[foot + 1]) * moved;
+      // A back foot already on its toes doesn't need to climb any higher than a flat one.
+      to[foot + 2] = Math.max(to[foot + 2], STEP_LIFT * smoothStep(STEP_MIN_DISTANCE, STEP_FULL_DISTANCE, far) * Math.sin(v * Math.PI));
+    }
+  };
 
   const sampleAttack = () => {
     const frames = compiled.attacks[attackIndex % compiled.attacks.length].frames;
@@ -983,24 +1234,61 @@ export function createWeaponRig(
     const p3 = next + 1 < count ? frames[next + 1] : compiled.idle;
     const { ch } = sampled;
     for (let i = 0; i < C.COUNT; i += 1) ch[i] = p1.ch[i] + (p2.ch[i] - p1.ch[i]) * eased;
+    const steppingIn = next === 0 && count > 0;
     for (let i = 0; i < SPLINED.length; i += 1) {
       splineInto(ch, SPLINED[i][0], SPLINED[i][1], p0.ch, p1.ch, p2.ch, p3.ch, eased);
     }
     // The recovery heads for the stance, but the attack's clip is still playing, so the steadying stays.
     if (next >= count) ch[C.STEADY] = p1.ch[C.STEADY];
+    if (steppingIn) stepFeet(ch, entry.ch, p2.ch, to > from ? (t - from) / (to - from) : 1);
     splineRotation(sampled.main, p0.main, p1.main, p2.main, p3.main, eased);
     splineRotation(sampled.off, p0.off, p1.off, p2.off, p3.off, eased);
   };
 
+  /** The tuck peaks halfway through the roll and is gone at both ends, so it never pops. */
+  const sampleDodge = () => {
+    copyFrame(compiled.dodge, sampled);
+    const tuck = setup.roll;
+    if (!tuck) return;
+    const bell = Math.sin(Math.min(1, dodgeClock / DODGE_SECONDS) * Math.PI) ** 2;
+    sampled.ch[C.HIPS + 1] += (tuck.lift ?? 0) * bell;
+    sampled.ch[C.LEAN] += (tuck.curl ?? 0) * bell;
+  };
+
   const sampleDrink = () => {
     copyFrame(compiled.drink, sampled);
-    if (sampled.ch[C.FREE_WEIGHT] === 0) return;
     const d = drinkClock / drinkSeconds;
-    const raised = smoothStep(0, 0.3, d) * (1 - smoothStep(0.75, 1, d));
-    const outside = otherHand === 'l' ? 0.2 : -0.2;
+    const raised = smoothStep(0.05, 0.3, d) * (1 - smoothStep(0.78, 1, d));
+    const outside = drinkHand === 'l' ? 0.2 : -0.2;
+    sampled.ch[C.HEAD_PITCH] += DRINK_HEAD_BACK * drinkTipAt(d);
+    sampled.ch[C.LEAN] += DRINK_LEAN_BACK * drinkTipAt(d);
     sampled.ch[C.FREE] = outside + (-MOUTH[0] - outside) * raised;
     sampled.ch[C.FREE + 1] = -0.32 + (MOUTH[1] + 0.32) * raised;
     sampled.ch[C.FREE + 2] = 0.1 + (MOUTH[2] - 0.1) * raised;
+  };
+
+  /** Slow shifts of weight on top of the stance. They only add to the frame, so a stance's shape stays as authored. */
+  const sampleIdle = () => {
+    copyFrame(compiled.idle, sampled);
+    if (!life) return;
+    const t = clock + breathPhase;
+    const { ch } = sampled;
+    const rise = Math.sin(t * LIFE_SINK_RATE);
+    const shift = Math.sin(t * LIFE_SHIFT_RATE);
+    ch[C.HIPS] += (shift * (life.shift ?? 0)) / 2;
+    ch[C.HIPS + 1] += (rise * (life.sink ?? 0)) / 2;
+    ch[C.HIP_ROLL] -= shift * (life.shift ?? 0);
+    ch[C.LEAN] -= rise * (life.sink ?? 0);
+    if (life.drift && mainItem) {
+      // Turned by the angle that moves the head that far, a beat behind the chest.
+      const angle = (Math.sin(t * LIFE_SINK_RATE - LIFE_DRIFT_DELAY) * life.drift) / 2 / mainItem.tip;
+      sampled.main.premultiply(scratchQ.setFromAxisAngle(X_AXIS, angle));
+    }
+    if (life.resettle) {
+      // A short lift once a loop, so that the hands look like they are taking a better hold.
+      const lift = Math.max(0, Math.sin(t * LIFE_RESETTLE_RATE));
+      ch[C.GRIP + 1] += life.resettle * lift ** 12;
+    }
   };
 
   const sample = (animation: AnimationId) => {
@@ -1008,8 +1296,14 @@ export function createWeaponRig(
       case 'attack':
         sampleAttack();
         break;
+      case 'idle':
+        sampleIdle();
+        break;
       case 'drink':
         sampleDrink();
+        break;
+      case 'dodge':
+        sampleDodge();
         break;
       default:
         copyFrame(compiled[animation], sampled);
@@ -1020,6 +1314,11 @@ export function createWeaponRig(
   const composeOutput = () => {
     if (needsCarry) {
       for (let i = 0; i < C.COUNT; i += 1) carried[i] = output.ch[i] - sampled.ch[i];
+      if (carryIsStep) stepFrom.set(output.ch);
+      // Feet stepping into an attack start from where they are, and fading in the first frame's move would flatten the step.
+      if (source === 'attack') {
+        for (const foot of [C.FOOT_L, C.FOOT_R]) carried.fill(0, foot, foot + 3);
+      }
       carriedMain.copy(output.main).multiply(scratchQ.copy(sampled.main).invert());
       carriedOff.copy(output.off).multiply(scratchQ.copy(sampled.off).invert());
       carryAge = 0;
@@ -1031,6 +1330,7 @@ export function createWeaponRig(
     }
     const left = (1 - carryAge) * (1 - carryAge) * (1 + 2 * carryAge);
     for (let i = 0; i < C.COUNT; i += 1) output.ch[i] = sampled.ch[i] + carried[i] * left;
+    if (carryIsStep) stepFeet(output.ch, stepFrom, sampled.ch, carryAge);
     output.main.identity().slerp(carriedMain, left).multiply(sampled.main);
     output.off.identity().slerp(carriedOff, left).multiply(sampled.off);
   };
@@ -1073,12 +1373,16 @@ export function createWeaponRig(
     limbTarget.copy(position).sub(scratchV.copy(arm.palm).applyQuaternion(limbRotation));
     reachClavicle(arm, limbTarget, weight);
     const reached = solveLimb(arm.limb, limbTarget, elbowPole(arm.hand, raised, back), limbRotation, FOREARM_ROLL_SHARE, weight);
-    stretch = Math.max(stretch, reached);
+    // A hand that has nearly let go isn't really reaching for this, so it doesn't count.
+    if (weight > 0.5) stretch = Math.max(stretch, reached);
   };
 
-  const closeHand = (arm: Arm, amount: number, weight: number) => {
-    for (const { bone, rest, axis, angle } of arm.fingers) {
-      q1.setFromAxisAngle(axis, angle * amount);
+  const closeHand = (arm: Arm, amount: number, weight: number, thumb?: Vec3) => {
+    const firstThumbJoint = arm.fingers.length - 3;
+    for (let i = 0; i < arm.fingers.length; i += 1) {
+      const { bone, rest, axis, angle } = arm.fingers[i];
+      const turn = thumb && i >= firstThumbJoint ? THREE.MathUtils.degToRad(thumb[i - firstThumbJoint]) : angle * amount;
+      q1.setFromAxisAngle(axis, turn);
       q2.copy(rest).multiply(q1);
       bone.quaternion.slerp(q2, weight);
     }
@@ -1088,6 +1392,7 @@ export function createWeaponRig(
     worldPosition(leg.limb.upper, leg.clipHip);
     worldPosition(leg.limb.lower, leg.clipKnee);
     worldPosition(leg.limb.end, leg.clipAnkle);
+    if (leg.ball) worldPosition(leg.ball, leg.clipBall);
     worldRotation(leg.limb.upper, leg.clipThigh);
     worldRotation(leg.limb.end, leg.clipFoot);
   };
@@ -1101,8 +1406,35 @@ export function createWeaponRig(
     if (solveWeight < 0.002) return;
 
     limbTarget.copy(leg.clipAnkle);
+    const walking = gaitBlend - runBlend;
+    if (life?.walkWidth && walking > 0.002) {
+      // The walk clip puts the feet in one line, and a fighter on guard keeps them apart.
+      model.worldToLocal(limbTarget);
+      limbTarget.x += side * life.walkWidth * walking;
+      model.localToWorld(limbTarget);
+    }
+    if (life?.runStride !== undefined && runBlend > 0.002) {
+      // Shorter, lower steps than the clip's, with the feet still landing under the body.
+      model.worldToLocal(limbTarget);
+      const scale = 1 + (life.runStride - 1) * runBlend;
+      limbTarget.z = RUN_STRIDE_MIDDLE + (limbTarget.z - RUN_STRIDE_MIDDLE) * scale;
+      // Only the swing comes down: a heel lifted off the floor stays where it is, or the toes would sink.
+      if (life.runLift !== undefined && leg.ball) {
+        // Measured at the ball of the foot, so that the toes come down towards the floor but never through it.
+        const ballAbove = model.worldToLocal(scratchV.copy(leg.clipBall)).y - leg.ballAt.y;
+        if (ballAbove > 0) limbTarget.y -= ballAbove * (1 - life.runLift) * runBlend;
+      } else {
+        const swing = limbTarget.y - leg.ankleAbove - leg.ballAt.y - RUN_HEEL_LIFT;
+        if (swing > 0) limbTarget.y -= swing * (1 - Math.sqrt(scale));
+      }
+      model.localToWorld(limbTarget);
+    }
     limbRotation.copy(leg.clipFoot);
     limbPole.copy(leg.clipKnee).sub(leg.clipHip);
+    if (life?.runLift !== undefined && runBlend > 0.002) {
+      // The foot is now further under the hip than the clip's, so a knee still aimed behind the body would bend backward.
+      limbPole.normalize().add(scratchV.set(0, 0, 1.5 * runBlend).applyQuaternion(modelRotation));
+    }
     if (weight > 0.002) {
       const lift = Math.max(0, ch[channel + 2]);
       const yaw = ch[channel + 3] * side;
@@ -1162,6 +1494,16 @@ export function createWeaponRig(
       scratchQ.copy(modelRotation).multiply(pelvisAtRest);
       pelvisRotation.slerp(scratchQ, steady);
     }
+    if (life?.runBob !== undefined && frameSeconds > 0) {
+      // Keeps less of the run clip's rise and fall, and the legs take up the difference.
+      const height = pelvisAt.y - model.matrixWorld.elements[13];
+      if (pelvisAverage < 0) pelvisAverage = height;
+      pelvisAverage += (height - pelvisAverage) * (1 - Math.exp(-frameSeconds / BOB_AVERAGE_SECONDS));
+      pelvisAt.y -= (height - pelvisAverage) * (1 - life.runBob) * runBlend;
+    } else if (life?.runBob !== undefined && pelvisAverage >= 0) {
+      const height = pelvisAt.y - model.matrixWorld.elements[13];
+      pelvisAt.y -= (height - pelvisAverage) * (1 - life.runBob) * runBlend;
+    }
     const hipsY = ch[C.HIPS + 1] + breath * BREATH_HIPS * planted;
     scratchV.set(ch[C.HIPS], hipsY, ch[C.HIPS + 2]).applyQuaternion(modelRotation);
     pelvisAt.add(scratchV);
@@ -1188,6 +1530,23 @@ export function createWeaponRig(
     }
     bodyRotation.copy(running).multiply(chestRest);
 
+    if (life?.handLag !== undefined || life?.offLag !== undefined) {
+      const height = chestAt.y - model.matrixWorld.elements[13];
+      if (chestAverage < 0) chestAverage = height;
+      chestAverage += (height - chestAverage) * (1 - Math.exp(-frameSeconds / LAG_SECONDS));
+      carryLag = (chestAverage - height) * gaitBlend;
+    }
+
+    gaitTurn = 0;
+    if (life?.gaitSwing && gaitBlend > 0.002 && legs.length === 2) {
+      // The stride is read from the clip's knees, so the swing stays in step whatever the clip's speed is. Left leg forward, right shoulder forward.
+      scratchV.copy(legs[0].clipKnee).sub(legs[1].clipKnee);
+      scratchV2.set(0, 0, 1).applyQuaternion(modelRotation);
+      const leftAhead = scratchV.dot(scratchV2) * (legs[0].limb.upper.name.endsWith('_l') ? 1 : -1);
+      gaitTurn = -life.gaitSwing * Math.max(-1, Math.min(1, leftAhead / GAIT_FULL_STRIDE)) * gaitBlend;
+      ch[C.TURN] += gaitTurn;
+    }
+
     // Now the authored bending: hips, then the spine makes up the rest of the way to the shoulders.
     const hipTurn = ch[C.HIP_TURN];
     const hipTilt = ch[C.HIP_TILT];
@@ -1195,11 +1554,13 @@ export function createWeaponRig(
     const turn = ch[C.TURN] - hipTurn;
     const lean = ch[C.LEAN] - hipTilt - breath * BREATH_CHEST;
     pelvisRotation.premultiply(bodyTurn(hipTurn, hipTilt, hipRoll, bodyRotation, scratchQ));
+    bodyBend.copy(scratchQ);
     running.copy(pelvisRotation);
     for (let i = 0; i < spineBones.length; i += 1) {
       const share = SPINE_SHARE[i];
       const bone = spineBones[i];
       bodyTurn(turn * share, lean * share, -hipRoll * share, bodyRotation, scratchQ2);
+      bodyBend.premultiply(scratchQ2);
       scratchQ.copy(running).multiply(bone.quaternion).premultiply(scratchQ2);
       bone.quaternion.copy(running.invert().multiply(scratchQ));
       running.copy(scratchQ);
@@ -1207,12 +1568,31 @@ export function createWeaponRig(
 
     // The head makes up most of that again, so that the eyes stay on the target.
     const unfollow = (1 - ch[C.HEAD]) / 2;
-    bodyTurn(-ch[C.TURN] * unfollow, -ch[C.LEAN] * unfollow, 0, bodyRotation, part);
+    if (setup.levelHead) {
+      // Exactly undoes the bend of the hips and spine, so that a turned and leaning fighter's head doesn't roll.
+      part.identity().slerp(bodyBend.invert(), unfollow);
+      part.premultiply(bodyTurn(0, ch[C.HEAD_PITCH] / 2, 0, bodyRotation, scratchQ2));
+    } else {
+      bodyTurn(-ch[C.TURN] * unfollow, (ch[C.HEAD_PITCH] / 2) - ch[C.LEAN] * unfollow, 0, bodyRotation, part);
+    }
     for (let i = 0; i < headBones.length; i += 1) {
       const bone = headBones[i];
       scratchQ.copy(running).multiply(bone.quaternion).premultiply(part);
       bone.quaternion.copy(running.invert().multiply(scratchQ));
       running.copy(scratchQ);
+    }
+    if (life?.runHeadLevel && runBlend > 0.002 && headBones.length > 0) {
+      // The run clip nods and swings the head on every step. Steadying the body leaves the head doing that alone, so
+      // this turns the last head bone back towards a steady gaze straight ahead.
+      const amount = life.runHeadLevel * runBlend;
+      scratchV.set(0, 0, 1).applyQuaternion(running).applyQuaternion(scratchQ2.copy(modelRotation).invert());
+      const nod = (Math.asin(Math.min(1, Math.max(-1, scratchV.y))) - RUN_HEAD_GAZE) * amount;
+      const swing = -Math.atan2(scratchV.x, scratchV.z) * amount;
+      scratchV.set(1, 0, 0).applyQuaternion(modelRotation);
+      scratchQ.setFromAxisAngle(scratchV, nod);
+      scratchV.set(0, 1, 0).applyQuaternion(modelRotation);
+      scratchQ.premultiply(scratchQ2.setFromAxisAngle(scratchV, swing));
+      headBones[headBones.length - 1].quaternion.multiply(scratchQ2.copy(running).invert().multiply(scratchQ).multiply(running));
     }
 
     // Put it all on the bones. Legs keep what the clip wanted, until they're solved below.
@@ -1225,8 +1605,23 @@ export function createWeaponRig(
     pelvis.updateWorldMatrix(false, true);
 
     const moved = Math.abs(ch[C.HIPS]) + Math.abs(ch[C.HIPS + 1]) + Math.abs(ch[C.HIPS + 2]);
-    const body = Math.max(steady, Math.min(1, moved * 50));
+    const body = Math.max(steady, Math.min(1, moved * 50), life?.runBob !== undefined ? runBlend : 0);
     for (const leg of legs) solveLeg(leg, body);
+  };
+
+  /** A hand holding no item, sent to the point in the FREE channels. */
+  const reachFree = (arm: Arm, breath: number, freeWeight: number) => {
+    const { ch } = output;
+    chestOffset(C.FREE, breath, limbTarget);
+    // The position given is the palm's, which sits a little past the wrist.
+    worldPosition(arm.limb.upper, scratchV2);
+    scratchV2.sub(limbTarget).setLength(arm.palm.y);
+    limbTarget.add(scratchV2);
+    reachClavicle(arm, limbTarget, Math.min(1, freeWeight));
+    // An archer's hand up by the jaw has just let go of the string, so its elbow stays up behind the arrow's line.
+    const elbowUp = setup.bow ? Math.max(0, Math.min(1, ch[C.FREE + 1] / BOW_ELBOW_UP_HEIGHT)) : 0;
+    const reached = solveLimb(arm.limb, limbTarget, elbowPole(arm.hand, 0.7 * elbowUp, 1 * elbowUp), null, 0, Math.min(1, freeWeight));
+    stretch = Math.max(stretch, reached);
   };
 
   const moveArms = () => {
@@ -1237,6 +1632,19 @@ export function createWeaponRig(
     if (mainArm && mainItem && mainWeight > 0.002) {
       scratchQ2.copy(bodyRotation).multiply(output.main);
       chestOffset(C.GRIP, breath, gripAt);
+      if (life?.handLag && carryLag !== 0) {
+        // The weapon's weight trails the step, so the hand drops late and the head rocks with it.
+        const trail = carryLag * life.handLag;
+        gripAt.y += trail;
+        scratchV.set(1, 0, 0).applyQuaternion(bodyRotation);
+        scratchQ2.premultiply(scratchQ.setFromAxisAngle(scratchV, trail * LAG_ROCK));
+      }
+      if (gaitTurn !== 0) {
+        // The hand goes with its shoulder, and the head of the weapon rocks a little with the hand.
+        gripAt.add(scratchV.set(0, 0, -gaitTurn * GAIT_HAND_SWING).applyQuaternion(bodyRotation));
+        scratchV.set(1, 0, 0).applyQuaternion(bodyRotation);
+        scratchQ2.premultiply(scratchQ.setFromAxisAngle(scratchV, -gaitTurn * GAIT_ROCK));
+      }
       reachWithItem(mainArm, gripAt, scratchQ2, mainItem.gripInverse, 0, Math.min(1, mainWeight));
     }
 
@@ -1245,42 +1653,42 @@ export function createWeaponRig(
       if (offWeight > 0.002) {
         scratchQ2.copy(bodyRotation).multiply(output.off);
         chestOffset(C.OFF, breath, gripAt);
+        if (life?.offLag) gripAt.y += carryLag * life.offLag;
+        // Much less than the main hand: this is a guard, and it stays in front.
+        if (gaitTurn !== 0) gripAt.add(scratchV.set(0, 0, gaitTurn * GAIT_OFF_SWING).applyQuaternion(bodyRotation));
         reachWithItem(otherArm, gripAt, scratchQ2, offItem.gripInverse, 0, Math.min(1, offWeight));
       }
+      // The weapon hand has let go of its weapon, to drink.
+      if (mainArm && ch[C.FREE_WEIGHT] > 0.002 && mainWeight < 0.998) reachFree(mainArm, breath, ch[C.FREE_WEIGHT]);
     } else if (otherArm) {
       const freeWeight = ch[C.FREE_WEIGHT];
-      if (freeWeight > 0.002) {
-        chestOffset(C.FREE, breath, limbTarget);
-        // The position given is the palm's, which sits a little past the wrist.
-        worldPosition(otherArm.limb.upper, scratchV2);
-        scratchV2.sub(limbTarget).setLength(otherArm.palm.y);
-        limbTarget.add(scratchV2);
-        reachClavicle(otherArm, limbTarget, Math.min(1, freeWeight));
-        const reached = solveLimb(otherArm.limb, limbTarget, elbowPole(otherArm.hand, 0), null, 0, Math.min(1, freeWeight));
-        stretch = Math.max(stretch, reached);
-      }
+      if (freeWeight > 0.002) reachFree(otherArm, breath, freeWeight);
 
       // The second hand goes wherever the weapon now is, so it stays on the handle.
       const together = setup.bow ? bowHands : ch[C.SECOND_HAND];
       if (mainItem && together > 0.002) {
         worldRotation(mainItem.holder, scratchQ2);
-        if (setup.bow) gripAt.set(0, 0, -braceDepth - handDraw * DRAW_LENGTH);
+        // A hand further along a long shaft comes at it from a different side than the main hand does.
+        if (setup.secondHandRoll) scratchQ2.multiply(scratchQ.setFromAxisAngle(ARROW_UP, setup.secondHandRoll));
+        if (setup.bow) gripAt.set(0, 0, -braceDepth * (1 + BOW_FLEX_DEPTH * Math.min(1, handDraw)) - handDraw * DRAW_LENGTH);
         else gripAt.set(0, -ch[C.REACH], 0);
         mainItem.holder.localToWorld(gripAt);
         // The further the string comes back, the higher and further behind the drawing elbow rides.
         const drawn = setup.bow ? Math.min(1, handDraw) : 0;
-        reachWithItem(otherArm, gripAt, scratchQ2, mainItem.gripInverse, setup.bow ? 0.75 + 1.6 * drawn : 0, Math.min(1, together), 0.9 * drawn);
+        // The drawing hand isn't holding the bow's frame: it rolls over, back of the hand out, as an archer's elbow rises.
+        drawHand.setFromAxisAngle(ARROW_UP, BOW_DRAW_HAND_ROLL * drawn).premultiply(mainItem.gripInverse);
+        reachWithItem(otherArm, gripAt, scratchQ2, setup.bow ? drawHand : mainItem.gripInverse, setup.bow ? 0.75 + 1.6 * drawn : 0, Math.min(1, together), setup.bow ? 0.9 * drawn : -(setup.secondElbowForward ?? 0));
       }
     }
 
-    if (mainArm) closeHand(mainArm, mainItem?.spec.curl ?? 1, 1);
+    if (mainArm) closeHand(mainArm, mainItem?.spec.curl ?? 1, 1, mainItem?.spec.thumb);
     if (otherArm) {
       if (offItem) closeHand(otherArm, offItem.spec.curl ?? 1, 1);
       else {
         const freeWeight = ch[C.FREE_WEIGHT];
         const together = Math.min(1, setup.bow ? bowHands : ch[C.SECOND_HAND]);
         if (freeWeight > 0.01) closeHand(otherArm, ch[C.FREE_FINGERS], Math.min(1, freeWeight));
-        if (together > 0.01) closeHand(otherArm, setup.bow ? 0.7 : 1, together);
+        if (together > 0.01) closeHand(otherArm, setup.bow ? 0.7 : 1, together, setup.bow ? undefined : mainItem?.spec.thumb);
       }
     }
   };
@@ -1304,10 +1712,16 @@ export function createWeaponRig(
 
     apply(seconds, animation) {
       clock += seconds;
+      frameSeconds = seconds;
+      const gaitStep = 1 - Math.exp(-seconds * GAIT_BLEND_RATE);
+      gaitBlend += ((animation === 'walk' || animation === 'run' ? 1 : 0) - gaitBlend) * gaitStep;
+      runBlend += ((animation === 'run' ? 1 : 0) - runBlend) * gaitStep;
       if (animation === 'attack') attackClock += seconds;
       else attacking = false;
       if (attacking && attackClock >= attackSeconds) attacking = false;
       if (animation !== source) {
+        carryIsStep = source === 'attack' && animation === 'idle';
+        const leavingRun = source === 'run';
         source = animation;
         needsCarry = true;
         carrySeconds =
@@ -1317,10 +1731,16 @@ export function createWeaponRig(
               ? DEATH_TRANSITION_SECONDS
               : animation === 'hit'
                 ? HIT_TRANSITION_SECONDS
-                : TRANSITION_SECONDS;
+                : animation === 'run' || (leavingRun && life?.runBlendSeconds !== undefined)
+                  ? (life?.runBlendSeconds ?? RUN_TRANSITION_SECONDS)
+                  : carryIsStep
+                    ? RECOVER_TRANSITION_SECONDS
+                    : TRANSITION_SECONDS;
         if (animation === 'drink') drinkClock = 0;
+        if (animation === 'dodge') dodgeClock = 0;
       }
       if (animation === 'drink') drinkClock += seconds;
+      if (animation === 'dodge') dodgeClock += seconds;
 
       sample(animation);
       carryAge = Math.min(1, carryAge + seconds / carrySeconds);
@@ -1339,18 +1759,68 @@ export function createWeaponRig(
       model.updateWorldMatrix(true, true);
       moveBody();
       moveArms();
+      if (flask && drinkArm) {
+        const d = animation === 'drink' ? drinkClock / drinkSeconds : -1;
+        const shown = d < 0 ? 0 : smoothStep(0, 0.1, d) * (1 - smoothStep(0.9, 1, d));
+        flask.visible = shown > 0.01;
+        if (flask.visible) {
+          // Turned from the chest and not the hand, so that it stays upright until it tips at the lips.
+          worldRotation(drinkArm.limb.end, scratchQ).invert();
+          scratchQ2.setFromAxisAngle(X_AXIS, FLASK_TIP * drinkTipAt(d));
+          flask.quaternion.copy(scratchQ).multiply(bodyRotation).multiply(scratchQ2);
+          flask.scale.copy(flaskScale).multiplyScalar(shown);
+        }
+        if (offItem && mainItem) mainItem.holder.visible = animation !== 'drink';
+      }
       if (offItem?.built) {
         animateOpenBook(offItem.holder.children[0], clock, attacking ? Math.min(1, attackClock / attackSeconds) : -1);
       }
 
       if (bowString) {
-        const back = -braceDepth - ch[C.DRAW] * DRAW_LENGTH;
+        if (seconds > 0) {
+          const step = Math.min(seconds, 0.05) / 4;
+          const bent = Math.min(1, ch[C.DRAW]);
+          for (let i = 0; i < 4; i += 1) {
+            bowFlexSpeed += (BOW_FLEX_STIFFNESS * (bent - bowFlex) - BOW_FLEX_DAMPING * bowFlexSpeed) * step;
+            bowFlex += bowFlexSpeed * step;
+          }
+        }
+        const depth = braceDepth * (1 + BOW_FLEX_DEPTH * bowFlex);
+        const tipAt = bowTip * (1 - BOW_FLEX_HEIGHT * bowFlex);
+        bowLimbs?.scale.set(1, 1 - BOW_FLEX_HEIGHT * bowFlex, 1 + BOW_FLEX_DEPTH * bowFlex);
+        const back = -depth - ch[C.DRAW] * DRAW_LENGTH;
         const positions = bowString.geometry.getAttribute('position') as THREE.BufferAttribute;
+        positions.setXYZ(0, 0, tipAt, -depth);
         positions.setZ(1, back);
+        positions.setXYZ(2, 0, -tipAt, -depth);
         positions.needsUpdate = true;
-        if (arrow) {
-          arrow.visible = ch[C.DRAW] > 0.02 && animation === 'attack';
-          arrow.position.set(0, 0, back);
+        if (arrow && mainItem && otherArm && quiver) {
+          // Once the string has been pulled and let go, this arrow is gone until the next attack.
+          if (ch[C.DRAW] > 0.5) arrowDrawn = true;
+          const nock = Math.min(1, ch[C.NOCK]);
+          arrow.visible = animation === 'attack' && nock > 0.01 && !(arrowDrawn && ch[C.DRAW] < 0.3);
+          if (arrow.visible) {
+            arrow.position.set(0, 0, back);
+            arrow.quaternion.setFromUnitVectors(ARROW_UP, ARROW_FORWARD);
+            if (nock < 0.995) {
+              // In the hand: from pointing down into the quiver, to lying along the shot.
+              mainItem.holder.getWorldQuaternion(scratchQ).invert();
+              quiver.getWorldQuaternion(scratchQ2);
+              scratchV.set(0, -1, 0).applyQuaternion(scratchQ2).applyQuaternion(scratchQ);
+              scratchQ2.setFromUnitVectors(ARROW_UP, scratchV);
+              arrow.quaternion.slerp(scratchQ2, 1 - nock);
+              scratchV.set(0, ARROW_HELD_AT, 0).applyQuaternion(arrow.quaternion);
+              otherArm.limb.end.localToWorld(scratchV2.copy(otherArm.palm));
+              mainItem.holder.worldToLocal(scratchV2).addScaledVector(scratchV, nock - 1);
+              arrow.position.lerp(scratchV2, 1 - nock);
+              // Just drawn, it's still in line with the quiver, however close the hand got to its mouth.
+              if (nock < ARROW_FREE_AT) {
+                quiver.localToWorld(scratchV2.set(0, ARROW_LENGTH - ARROW_HELD_AT, 0));
+                mainItem.holder.worldToLocal(scratchV2);
+                arrow.position.lerp(scratchV2, 1 - nock / ARROW_FREE_AT);
+              }
+            }
+          }
         }
       }
     },
@@ -1359,6 +1829,7 @@ export function createWeaponRig(
       attackIndex = index;
       attackClock = 0;
       attacking = true;
+      arrowDrawn = false;
       copyFrame(output, entry);
       if (source === 'attack') {
         // A new attack straight after another: the entry pose already covers the switch.
@@ -1383,6 +1854,8 @@ export function createWeaponRig(
 
     dispose() {
       bowString?.geometry.dispose();
+      flask?.traverse((child) => (child as THREE.Mesh).geometry?.dispose());
+      quiver?.traverse((child) => (child as THREE.Mesh).geometry?.dispose());
       for (const item of mounted) {
         if (!item.built) continue;
         item.holder.traverse((child) => (child as THREE.Mesh).geometry?.dispose());

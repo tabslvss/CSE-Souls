@@ -43,6 +43,8 @@ const STRIKE_SECONDS = 0.1;
 const STRIKE_LUNGE_SPEED = 7;
 const FACING_LOCK_SECONDS = 0.25;
 const FLEE_SECONDS = 4;
+/** Prey only notices a walking or standing player at this share of its usual distance. */
+const QUIET_SHARE = 0.45;
 const RETURN_HEAL_PER_SECOND = 0.2;
 const CIRCLE_RADIUS = 4;
 const PACK_RADIUS = 25;
@@ -86,6 +88,10 @@ interface Camp {
   radius: number;
   members: Creature[];
   nextAttackAt: number;
+}
+
+function isQuiet(state: { moving: number; dodgeTime: number }): boolean {
+  return state.moving < 2 && state.dodgeTime <= 0;
 }
 
 export class Creature {
@@ -281,6 +287,8 @@ export class CreatureField {
       const squared = dx * dx + dz * dz;
       if (squared > bestSquared) continue;
       if (c.kind.behavior === 'hunter' && this.isWarded(player.state)) continue;
+      // Prey outruns any player, so a careful walk is how a melee weapon ever gets close enough.
+      if (c.kind.behavior === 'prey' && isQuiet(player.state) && squared > range * range * QUIET_SHARE * QUIET_SHARE) continue;
       best = player;
       bestSquared = squared;
     }

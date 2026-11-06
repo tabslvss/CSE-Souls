@@ -242,7 +242,7 @@ The shared world does not pause, and enemies do not reset. This is different fro
 
 | Input | Action |
 |---|---|
-| WASD, mouse, Shift, Space, left click | Already built: move, look, run, dodge, attack |
+| WASD, mouse, Shift, C, left click | Already built: move, look, run, dodge roll, attack. Space stays free for jump. |
 | Right click (hold) | Block |
 | Q | Potion |
 | E | Interact: loot, chest, bonfire. Hold to revive. |

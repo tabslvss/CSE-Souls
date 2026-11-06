@@ -252,8 +252,8 @@ export function HomePage() {
 
       <section className="section">
         <SectionHeading eyebrow="Gameplay" title="How it plays">
-          The game is still in development. Right now you can create a character and explore the world
-          with other players. The rest is coming soon.
+          The game is still in development. Right now you can create a character, explore the world with
+          other players, hunt its animals for Binary Dust and open chests.
         </SectionHeading>
         <div className="gameplay">
           <Reveal>

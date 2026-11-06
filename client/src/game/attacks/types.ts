@@ -75,6 +75,8 @@ export interface BodyPose {
   lean?: number;
   /** How much the head turns with the shoulders. 0 stays on target, 1 goes along. Defaults to 0.2. */
   headFollow?: number;
+  /** Nods the head forward on top of that, for a gaze that the clip leaves too high. */
+  headPitch?: number;
   /** The arm holding nothing. On a two-handed weapon, set oneHand as well. */
   freeHand?: FreeHand;
   /** Lets go of a two-handed weapon with the second hand. */
@@ -86,6 +88,8 @@ export interface Pose extends ItemPose, BodyPose {
   reach?: number;
   /** Bow only: how far the string is pulled, from 0 to 1. The right hand is on it above 0. */
   draw?: number;
+  /** Bow only: above 0 an arrow is in the free hand, drawn from the quiver. At 1 it's on the string. */
+  nock?: number;
 }
 
 /**
@@ -112,19 +116,80 @@ export interface Attack {
   keys?: AttackKey[];
 }
 
+/** Small movements on top of a stance, so that someone standing or walking looks alive. Lengths are in meters. */
+export interface StanceLife {
+  /** How far the pelvis sinks and rises while standing, on a loop of about 3 seconds. */
+  sink?: number;
+  /** How far the weight moves from side to side while standing, on a loop of about 6 seconds. */
+  shift?: number;
+  /** How far the weapon's head drifts while standing, a little after the chest moves. */
+  drift?: number;
+  /** Now and then the hands shift on a heavy handle, by this many meters. */
+  resettle?: number;
+  /** While walking or running, how much the main hand trails the body's rise and fall. 1 is all of it. */
+  handLag?: number;
+  /** The same for the second item. Negative answers the other way. */
+  offLag?: number;
+  /** How much of the run clip's rise and fall to keep, from 0 to 1. Lower reads as heavier. */
+  runBob?: number;
+  /** While walking, how much further out each foot goes than the clip puts it, in meters. */
+  walkWidth?: number;
+  /** How long the run's steps are next to the clip's, from 0 to 1. Shorter steps need a higher runRate to cover the same ground. */
+  runStride?: number;
+  /** How much of the run clip's foot lift to keep, from 0 to 1. Leave it out and shorter steps lower the feet a little on their own. */
+  runLift?: number;
+  /** How much of the run clip's head nod and swing to take out, from 0 to 1, so that the eyes stay level and on target. */
+  runHeadLevel?: number;
+  /** How much of the run clip's twist to take out of the spine and pelvis, from 0 to 1, so a guard stays in front. */
+  runSteady?: number;
+  /** While walking or running, how far the shoulders turn against the legs at full stride, in radians. The hands swing with them. */
+  gaitSwing?: number;
+  /** Seconds to get into and out of the run, for a huge weapon whose carry is a long way from its guard. */
+  runBlendSeconds?: number;
+}
+
+/** How a weapon rolls, on top of the roll clip. Grips here turn along with the chest, as the body goes over. */
+export interface RollPose {
+  main: ItemPose;
+  off?: ItemPose;
+  /** How far the pelvis is held up at the middle of the roll, in meters, so that it reads as a tuck and not a fall. */
+  lift?: number;
+  /** How much further the spine curls forward at the middle of the roll. */
+  curl?: number;
+}
+
 /** Everything that moves for one weapon. Lives in a file per weapon family, and armory.ts adds the items. */
 export interface WeaponMoves {
   idleClip: string;
   runClip: string;
+  /** How fast the run clip plays. Match this to run speed, so that the planted foot doesn't skate. Defaults to 1. */
+  runRate?: number;
+  life?: StanceLife;
   /** Poses for the main item. Where one is left out, the animation clip moves that arm freely. */
   stance: { idle?: Pose; walk?: Pose; run?: Pose };
   /** Poses for the second item. */
   offStance?: { idle: ItemPose; walk?: ItemPose; run?: ItemPose };
+  /** Keeps the head exactly level however far the body turns and leans, for a weapon that keeps its eyes on the target. */
+  levelHead?: boolean;
+  /** Holds the items tight during a roll, for ones long or wide enough to go through the floor otherwise. */
+  roll?: RollPose;
   /** Attacks take turns through this list. Each one should start where the one before it ended. */
   attacks: Attack[];
 }
 
 export type AxisName = '+x' | '-x' | '+y' | '-y' | '+z' | '-z';
+
+/** Heads that are too small for how heavy the weapon should look, and handles that are too thick. */
+export interface ItemReshape {
+  /** Where the head starts, from 0 at the butt to 1 at the tip. Anything below this is handle. */
+  headFrom: number;
+  /** How far from the handle, along the edge in the model's own units, the head still counts as handle. */
+  neck: number;
+  /** How many times bigger to make the head, as [across its flat side, along the handle, along its edge]. */
+  head: Vec3;
+  /** How many times thicker to make the handle. */
+  handle: number;
+}
 
 export interface HeldItem {
   /** The object's name in weapons.glb, or just a name when `build` makes the item. */
@@ -149,8 +214,14 @@ export interface HeldItem {
   flat?: number;
   /** Where the grip is across the item, along the edge axis from 0 to 1. Defaults to the middle. */
   edgeAt?: number;
+  /** Changes the proportions of a model: a bigger head on a slimmer handle. */
+  reshape?: ItemReshape;
   /** How closed the fingers are, from 0 to 1. */
   curl?: number;
+  /** Bends the thumb's three joints by these degrees, for grips where it doesn't wrap with the fingers. */
+  thumb?: Vec3;
+  /** Adds the forearm strap and hand grip to the back of a shield. */
+  straps?: boolean;
 }
 
 export interface WeaponSetup extends WeaponMoves {
@@ -159,5 +230,9 @@ export interface WeaponSetup extends WeaponMoves {
   items: HeldItem[];
   /** Holding with both hands: how far along the handle the second hand sits from the main hand. */
   secondHand?: number;
+  /** Turns the second hand around the handle by this many radians, so its palm meets the shaft from another side. */
+  secondHandRoll?: number;
+  /** Swings the second elbow forward from its usual place, for a hand held close to the body that would otherwise put the elbow through the torso. */
+  secondElbowForward?: number;
   bow?: boolean;
 }

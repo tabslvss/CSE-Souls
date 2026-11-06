@@ -169,16 +169,23 @@ function leaveWorld(connection: Connection): void {
   }
 }
 
+/** The last tick's split, so the log can show which part is slow. */
+let lastSendMs = 0;
+
 function tick(): void {
   world.tick();
-  if (world.tickNumber % SNAPSHOT_EVERY_TICKS !== 0) return;
+  const sendStart = performance.now();
   world.beginSnapshots();
+  // Everyone gets a snapshot every other tick, but half on each, so no one tick does all the sending.
+  const turn = world.tickNumber % SNAPSHOT_EVERY_TICKS;
   for (const seat of seats.values()) {
+    if (seat.player.id % SNAPSHOT_EVERY_TICKS !== turn) continue;
     const { socket } = seat.connection;
     if (socket.bufferedAmount > SKIP_SNAPSHOT_BUFFERED_BYTES && socket.bufferedAmount <= MAX_BUFFERED_BYTES) continue;
     send(socket, world.snapshotFor(seat.player));
   }
   world.endSnapshots();
+  lastSendMs = performance.now() - sendStart;
 }
 
 function percentile(sorted: number[], share: number): number {
@@ -190,6 +197,8 @@ function startClock(): void {
   const tickMs = TICK_DT * 1000;
   let due = performance.now() + tickMs;
   let durations: number[] = [];
+  let sends: number[] = [];
+  let cpuAtLog = process.cpuUsage();
   let lastLog = performance.now();
   setInterval(() => {
     const now = performance.now();
@@ -203,6 +212,7 @@ function startClock(): void {
         log('error', 'tick_failed', { stack: err instanceof Error ? err.stack : String(err) });
       }
       durations.push(performance.now() - startedAt);
+      sends.push(lastSendMs);
       due += tickMs;
       ran += 1;
     }
@@ -211,8 +221,17 @@ function startClock(): void {
     if (now - lastLog >= TICK_LOG_INTERVAL_MS) {
       lastLog = now;
       if (seats.size > 0 && durations.length > 0) {
+        const cpu = process.cpuUsage(cpuAtLog);
+        const total = durations.reduce((sum, value) => sum + value, 0);
         durations.sort((a, b) => a - b);
+        sends.sort((a, b) => a - b);
         log('info', 'tick_time', {
+          mean: Math.round((total / durations.length) * 100) / 100,
+          // All of this process's work between ticks too, like reading inputs, shared out per tick.
+          cpuPerTick: Math.round(((cpu.user + cpu.system) / 1000 / durations.length) * 100) / 100,
+          ticks: durations.length,
+          sendP50: sends.length > 0 ? percentile(sends, 0.5) : 0,
+          sendP99: sends.length > 0 ? percentile(sends, 0.99) : 0,
           p50: percentile(durations, 0.5),
           p99: percentile(durations, 0.99),
           max: percentile(durations, 1),
@@ -222,6 +241,8 @@ function startClock(): void {
         });
       }
       durations = [];
+      sends = [];
+      cpuAtLog = process.cpuUsage();
     }
   }, CLOCK_INTERVAL_MS);
 }

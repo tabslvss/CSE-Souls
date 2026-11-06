@@ -3,7 +3,7 @@ import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import type { Appearance, ClassId, Stats } from '../../../shared/classes';
 import { weaponFor } from '../../../shared/combat';
-import { DODGE_SECONDS, STAGGER_SECONDS, deriveStats, type AnimationId } from '../../../shared/sim';
+import { DODGE_SECONDS, DRINK_SECONDS, JUMP_SECONDS, STAGGER_SECONDS, deriveStats, type AnimationId } from '../../../shared/sim';
 import { ARMORY } from './armory';
 import { applyVertexSnap, makeTextureCrunchy } from './psxRenderer';
 import { createWeaponRig } from './weaponRig';
@@ -20,8 +20,12 @@ const WEAPON_GLOW = 0.45;
 /** Attacks without a clip of their own stand still in the first frame of this one. */
 const NEUTRAL_BODY = 'neutral';
 const NEUTRAL_CLIP = 'Idle_Loop';
-/** Matches how long a potion takes in shared/sim.ts. */
-const DRINK_SECONDS = 0.9;
+/** Steps during a drink are slower, to match the slower walk in shared/sim.ts. */
+const DRINK_WALK_RATE = 0.55;
+/** A jump is three clips: the push off, the time in the air, and the last moment before touching down. */
+const JUMP_START_SECONDS = 0.14;
+const JUMP_LAND_SECONDS = 0.18;
+const JUMP_FADE_SECONDS = 0.07;
 
 const SKIN_TINTS = ['#ffffff', '#f6dcc8', '#dcb494', '#a8805e', '#6f4f38', '#b4c0b0'];
 const HAIR_TINTS = ['#3a2a1c', '#14110f', '#6b4524', '#a07a44', '#8c8c8c', '#6e2a1e'];
@@ -56,7 +60,8 @@ const VISUALS: Record<ClassId, ClassVisual> = {
     headgearLabel: 'Hood',
     headgearDefault: false,
     bareTorso: true,
-    parts: ['{G}_Peasant_Legs', 'BOOTS', '{G}_Ranger_Arms_Bracer'],
+    // The belt covers the gap between the bare torso's hem and the top of the trousers.
+    parts: ['{G}_Peasant_Legs', 'BOOTS', '{G}_Ranger_Body_Belt_1', '{G}_Ranger_Arms_Bracer'],
     femaleParts: ['{G}_Peasant_Body', '{G}_Peasant_Arms', '{G}_Peasant_Legs', 'BOOTS', '{G}_Ranger_Body_Belt_1', '{G}_Ranger_Arms_Bracer'],
   },
   duelist: {
@@ -75,6 +80,12 @@ const VISUALS: Record<ClassId, ClassVisual> = {
     parts: ['{G}_Ranger_Body', '{G}_Ranger_Arms', '{G}_Ranger_Legs', 'BOOTS', '{G}_Ranger_Body_Belt_1', '{G}_Ranger_Body_Belt_2', '{G}_Ranger_Arms_Bracer'],
   },
 };
+
+/**
+ * How long a character can stand between attacks and still carry on with the same combo. Each attack
+ * starts from where the last one ended, so this has to run out about when the feet are back home.
+ */
+const COMBO_PAUSE_SECONDS = 0.25;
 
 export const CLASS_PICTURE_ICON: Record<ClassId, string> = {
   juggernaut: 'battle-axe',
@@ -205,6 +216,8 @@ export interface CharacterModel {
   /** Crossfades to an animation. restart replays a one-shot, like a second swing. */
   play: (animation: AnimationId, restart?: boolean) => void;
   update: (seconds: number) => void;
+  /** During a drink only: whether the legs walk or stand. */
+  setDrinkWalking: (walking: boolean) => void;
   /** Above 1 means a hand can't reach where the weapon wants it. Used to check new poses. */
   armStretch: () => number;
   /** The same for the legs, when a pose asks for a foot further away than the leg is long. */
@@ -222,6 +235,30 @@ export interface CharacterModel {
   /** Seconds for the whole attack, after the character's Speed. */
   attackSeconds: number;
   dispose: () => void;
+}
+
+/**
+ * The kit binds the shoulder plate to the upper arm alone, so when the arm hangs the plate swings off the
+ * shoulder like a bowl beside the arm. Sharing it with the collarbone keeps it on the shoulder, and it only
+ * tips part of the way with the arm. Clones share one geometry, so this only has to happen once per body.
+ */
+const SHOULDER_PLATE_ON_COLLARBONE = 0.6;
+const seatedPlates = new WeakSet<THREE.BufferGeometry>();
+
+function seatShoulderPlate(mesh: THREE.SkinnedMesh) {
+  const { geometry, skeleton } = mesh;
+  if (!skeleton || seatedPlates.has(geometry)) return;
+  const collarbone = skeleton.bones.findIndex((bone) => bone.name === 'clavicle_l');
+  const upperArm = skeleton.bones.findIndex((bone) => bone.name === 'upperarm_l');
+  if (collarbone < 0 || upperArm < 0) return;
+  const { skinIndex, skinWeight } = geometry.attributes;
+  for (let i = 0; i < skinIndex.count; i += 1) {
+    skinIndex.setXYZW(i, collarbone, upperArm, 0, 0);
+    skinWeight.setXYZW(i, SHOULDER_PLATE_ON_COLLARBONE, 1 - SHOULDER_PLATE_ON_COLLARBONE, 0, 0);
+  }
+  skinIndex.needsUpdate = true;
+  skinWeight.needsUpdate = true;
+  seatedPlates.add(geometry);
 }
 
 export async function createCharacter(classId: ClassId, appearance: Appearance, stats?: Stats): Promise<CharacterModel> {
@@ -302,7 +339,9 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
     child.visible = shown.has(child.name);
     if (!child.visible) continue;
     child.traverse((object) => {
-      if ((object as THREE.Mesh).isMesh) dress(object as THREE.Mesh, child.name);
+      if (!(object as THREE.Mesh).isMesh) return;
+      dress(object as THREE.Mesh, child.name);
+      if (/Pauldron/.test(child.name)) seatShoulderPlate(object as THREE.SkinnedMesh);
     });
   }
 
@@ -339,13 +378,15 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
     dodge: 'Roll',
     hit: 'Hit_Chest',
     death: 'Death01',
-    drink: 'Consume',
+    // The arms and head are posed by the rig, so the legs can go on standing or walking.
+    drink: setup.idleClip,
+    jump: 'Jump_Start',
   };
   const oneShotSeconds: Partial<Record<AnimationId, number>> = {
     attack: attackSeconds,
     dodge: DODGE_SECONDS,
     hit: STAGGER_SECONDS,
-    drink: DRINK_SECONDS,
+    jump: JUMP_START_SECONDS,
   };
 
   /** Every clip gets two actions on the same tracks, so a one-shot can crossfade into itself. */
@@ -362,6 +403,8 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
         action.clampWhenFinished = true;
         // Keeps the animation exactly as long as the action lasts in the game rules.
         action.timeScale = clip.duration / seconds;
+      } else if (name === setup.runClip && setup.runRate) {
+        action.timeScale = setup.runRate;
       }
       return action;
     });
@@ -372,28 +415,46 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
   let current: THREE.AnimationAction | null = null;
   let currentId: AnimationId | null = null;
   let attackIndex = 0;
+  let sinceAttack = 0;
+  let drinkWalking = false;
+  let jumpClock = 0;
+  let jumpStage = 0;
+
+  const crossTo = (name: string, seconds?: number, fade = FADE_SECONDS, rate?: number): boolean => {
+    const pair = actionsFor(name, name === NEUTRAL_BODY ? undefined : seconds);
+    if (!pair) return false;
+    const next = pair[0] === current ? pair[1] : pair[0];
+    if (current) current.fadeOut(fade);
+    next.reset().fadeIn(current ? fade : 0).play();
+    if (rate !== undefined) next.timeScale = rate;
+    if (name === NEUTRAL_BODY) next.paused = true;
+    current = next;
+    return true;
+  };
+
   const play = (id: AnimationId, restart = false) => {
     if (id === currentId && !restart) return;
     let name: string;
     if (id === 'attack') {
+      // After a pause the combo starts over, because later attacks begin from where earlier ones end.
+      if (sinceAttack > COMBO_PAUSE_SECONDS) attackIndex = 0;
+      sinceAttack = 0;
       name = setup.attacks[attackIndex % setup.attacks.length].clip ?? NEUTRAL_BODY;
       rig.startAttack(attackIndex);
       attackIndex += 1;
     } else {
       name = clipNames[id];
     }
-    const pair = actionsFor(name, name === NEUTRAL_BODY ? undefined : oneShotSeconds[id]);
-    if (!pair) return;
-    const next = pair[0] === current ? pair[1] : pair[0];
-    if (current) current.fadeOut(FADE_SECONDS);
-    next.reset().fadeIn(current ? FADE_SECONDS : 0).play();
-    if (name === NEUTRAL_BODY) next.paused = true;
-    if (id === 'death') {
-      next.setLoop(THREE.LoopOnce, 1);
-      next.clampWhenFinished = true;
+    // A drink may have left the walk clip running slowly.
+    if (!crossTo(name, oneShotSeconds[id], FADE_SECONDS, id === 'walk' ? 1 : undefined)) return;
+    if (id === 'death' && current) {
+      current.setLoop(THREE.LoopOnce, 1);
+      current.clampWhenFinished = true;
     }
-    current = next;
     currentId = id;
+    drinkWalking = false;
+    jumpClock = 0;
+    jumpStage = 0;
   };
   play('idle');
 
@@ -401,10 +462,25 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
     root,
     play,
     update: (seconds) => {
+      if (currentId !== 'attack') sinceAttack += seconds;
+      if (currentId === 'jump') {
+        jumpClock += seconds;
+        const stage = jumpClock < JUMP_START_SECONDS ? 0 : jumpClock < JUMP_SECONDS - JUMP_LAND_SECONDS ? 1 : 2;
+        if (stage !== jumpStage) {
+          jumpStage = stage;
+          if (stage === 1) crossTo('Jump_Loop', undefined, JUMP_FADE_SECONDS);
+          else crossTo('Jump_Land', JUMP_LAND_SECONDS, JUMP_FADE_SECONDS);
+        }
+      }
       rig.beforeClips();
       mixer.update(seconds);
       rig.afterClips();
       rig.apply(seconds, currentId ?? 'idle');
+    },
+    setDrinkWalking: (walking) => {
+      if (currentId !== 'drink' || walking === drinkWalking) return;
+      drinkWalking = walking;
+      crossTo(walking ? 'Walk_Loop' : setup.idleClip, undefined, FADE_SECONDS, walking ? DRINK_WALK_RATE : undefined);
     },
     armStretch: rig.stretch,
     legStretch: rig.legStretch,
@@ -414,6 +490,7 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
     impactKeyAt: rig.impactKeyAt,
     setNextAttack: (index) => {
       attackIndex = index;
+      sinceAttack = 0;
     },
     attackSeconds,
     dispose: () => {

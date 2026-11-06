@@ -4,7 +4,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { GameClient, type HudState } from '../game/GameClient';
 import type { ConnectionStatus } from '../game/net';
 import { BinaryDust } from '../components/BinaryDust';
+import { controlsFor } from '../components/Hud';
 import { Icon } from '../components/Icon';
+import { ActionGlyph, useInputDevice } from '../components/InputGlyph';
 import { useSession } from '../session';
 
 const STATUS_MESSAGE: Partial<Record<ConnectionStatus, string>> = {
@@ -14,16 +16,40 @@ const STATUS_MESSAGE: Partial<Record<ConnectionStatus, string>> = {
   expired: 'Your login has run out. Taking you to log in…',
 };
 
+const BANNER_MS = 2600;
+const NOTICE_MS = 3600;
+
+function share(value: number, max: number): number {
+  return max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+}
+
+/** Health has a pale chip behind its fill, which lags behind so you can see what a blow just cost. */
+function Bar({ kind, title, percent, tall }: { kind: string; title: string; percent: number; tall?: boolean }) {
+  return (
+    <div className={`bar bar--${kind}${tall ? ' bar--tall' : ''} bar--game`} title={title}>
+      {kind === 'health' && <span className="bar__chip" style={{ width: `${percent}%` }} />}
+      <span className="bar__fill" style={{ width: `${percent}%` }} />
+    </div>
+  );
+}
+
 export function GamePage() {
   const { user, loading, refresh } = useSession();
   const navigate = useNavigate();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const plateRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const device = useInputDevice();
   const clientRef = useRef<GameClient | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [locked, setLocked] = useState(false);
   const [hud, setHud] = useState<HudState | null>(null);
   const [dust, setDust] = useState(0);
+  const dustRef = useRef<HTMLElement>(null);
+  const [banner, setBanner] = useState<{ key: number; title: string; detail: string } | null>(null);
+  const [notice, setNotice] = useState<{ key: number; text: string } | null>(null);
+  const [vhsOn, setVhsOn] = useState(true);
+  const [reduceShake, setReduceShake] = useState(false);
 
   const hasCharacter = !!user?.hasCharacter;
 
@@ -33,6 +59,8 @@ export function GamePage() {
 
   useEffect(() => {
     if (!hasCharacter || !canvasRef.current || !plateRef.current) return;
+    let bannerTimer = 0;
+    let noticeTimer = 0;
     const client = new GameClient(canvasRef.current, plateRef.current, {
       onStatus: (next) => {
         if (next === 'no_character') {
@@ -45,17 +73,52 @@ export function GamePage() {
       },
       onHud: setHud,
       onPointerLock: setLocked,
-      onBinaryDust: setDust,
+      onBinaryDust: (amount, pulse) => {
+        setDust(amount);
+        if (pulse) dustRef.current?.animate(
+          [{ transform: 'scale(1)' }, { transform: 'scale(1.45)', color: '#ff8a6a' }, { transform: 'scale(1)' }],
+          { duration: 320, easing: 'ease-out' },
+        );
+      },
+      onBanner: (title, detail) => {
+        window.clearTimeout(bannerTimer);
+        setBanner({ key: performance.now(), title, detail });
+        bannerTimer = window.setTimeout(() => setBanner(null), BANNER_MS);
+      },
+      onNotice: (text) => {
+        window.clearTimeout(noticeTimer);
+        setNotice({ key: performance.now(), text });
+        noticeTimer = window.setTimeout(() => setNotice(null), NOTICE_MS);
+      },
+      onMenu: (nav) => {
+        const card = menuRef.current;
+        if (!card) return;
+        const items = [...card.querySelectorAll<HTMLElement>('button, a[href], input')];
+        const current = items.indexOf(document.activeElement as HTMLElement);
+        if (nav === 'up' || nav === 'down') {
+          const step = nav === 'down' ? 1 : -1;
+          items[current < 0 ? 0 : (current + step + items.length) % items.length]?.focus();
+        } else if (nav === 'back' || current <= 0) {
+          // The first item is the Play button, which on a controller needs no pointer lock.
+          client.playWithController();
+        } else {
+          items[current].click();
+        }
+      },
     });
     clientRef.current = client;
+    setVhsOn(client.vhsOn);
+    setReduceShake(client.reduceShake);
     return () => {
+      window.clearTimeout(bannerTimer);
+      window.clearTimeout(noticeTimer);
       clientRef.current = null;
       client.dispose();
     };
   }, [hasCharacter, navigate, refresh]);
 
   const message = STATUS_MESSAGE[status];
-  const staminaShare = hud ? (hud.stamina / hud.maxStamina) * 100 : 100;
+  const dead = !!hud && hud.deadSeconds > 0;
 
   return (
     <div className="game">
@@ -66,24 +129,18 @@ export function GamePage() {
         <div className="game__vitals">
           <div className="game__flask">
             {artUrl('icon-flask') ? <img src={artUrl('icon-flask')} alt="" /> : <Icon name="health-potion" />}
-            <span>3</span>
+            <span>{hud ? hud.potions : 3}</span>
           </div>
           <div className="game__bars">
-            <div className="bar bar--health bar--tall" title="Health">
-              <span style={{ width: '100%' }} />
-            </div>
-            <div className="bar bar--magic" title="Magic">
-              <span style={{ width: '100%' }} />
-            </div>
-            <div className="bar bar--stamina" title="Stamina">
-              <span style={{ width: `${staminaShare}%`, transition: 'width 0.12s linear' }} />
-            </div>
+            <Bar kind="health" title="Health" tall percent={hud ? share(hud.health, hud.maxHealth) : 100} />
+            <Bar kind="magic" title="Magic" percent={hud ? share(hud.magic, hud.maxMagic) : 100} />
+            <Bar kind="stamina" title="Stamina" percent={hud ? share(hud.stamina, hud.maxStamina) : 100} />
           </div>
         </div>
 
         <div className="game__dust" title="Binary Dust. Spend it to raise your stats.">
           <BinaryDust />
-          <strong>{dust.toLocaleString()}</strong>
+          <strong ref={dustRef} data-testid="dust">{dust.toLocaleString()}</strong>
         </div>
 
         <div className="game__online">
@@ -104,22 +161,60 @@ export function GamePage() {
 
       {message && <p className="game__message" role="status">{message}</p>}
 
+      {hud?.prompt && locked && <p className="game__prompt">Press <ActionGlyph action="interact" /> {hud.prompt}</p>}
+      {notice && <p key={notice.key} className="game__notice" role="status">{notice.text}</p>}
+      {banner && !dead && (
+        <div key={banner.key} className="game__banner" role="status">
+          <strong>{banner.title}</strong>
+          <small>{banner.detail}</small>
+        </div>
+      )}
+      {dead && (
+        <div className="game__death" role="status">
+          <strong>Fallen</strong>
+          <small>Back at the nearest bonfire in {Math.max(1, Math.ceil(hud.deadSeconds))}</small>
+        </div>
+      )}
+
       {!locked && status === 'open' && (
         <div className="game__menu">
-          <div className="game__menu-card">
+          <div ref={menuRef} className="game__menu-card">
             <h1>Paused</h1>
             <button type="button" className="btn btn--primary btn--large" onClick={() => clientRef.current?.requestPointerLock()}>
-              Click to Play
+              {device === 'keyboard' ? 'Click to Play' : <>Press <ActionGlyph action="confirm" /> to Play</>}
             </button>
             <dl className="game__keys">
-              <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>Move</dd></div>
-              <div><dt><kbd>Mouse</kbd></dt><dd>Look around</dd></div>
-              <div><dt><kbd>Shift</kbd></dt><dd>Run</dd></div>
-              <div><dt><kbd>Space</kbd></dt><dd>Dodge</dd></div>
-              <div><dt><kbd>Left click</kbd></dt><dd>Attack</dd></div>
-              <div><dt><kbd>Scroll</kbd></dt><dd>Camera distance</dd></div>
-              <div><dt><kbd>Esc</kbd></dt><dd>Pause</dd></div>
+              {controlsFor(device).map(({ action, label }) => (
+                <div key={action}>
+                  <dt><ActionGlyph action={action} /></dt>
+                  <dd>{label}</dd>
+                </div>
+              ))}
             </dl>
+            <div className="game__settings">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={vhsOn}
+                  onChange={(event) => {
+                    clientRef.current?.setVhs(event.target.checked);
+                    setVhsOn(event.target.checked);
+                  }}
+                />
+                VHS tape look
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={reduceShake}
+                  onChange={(event) => {
+                    clientRef.current?.setReduceShake(event.target.checked);
+                    setReduceShake(event.target.checked);
+                  }}
+                />
+                Reduce camera shake
+              </label>
+            </div>
             <div className="game__menu-links">
               <Link to="/create">Edit Character</Link>
               <Link to="/">Leave Game</Link>

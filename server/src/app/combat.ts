@@ -22,6 +22,7 @@ import {
   FLAG_ATTACK,
   FLAG_DODGE,
   FLAG_INTERACT,
+  FLAG_JUMP,
   FLAG_POTION,
   FLAG_RUN,
   MAX_FLAGS,
@@ -87,6 +88,7 @@ const NO_INPUT: ServerInput = {
   dodge: false,
   attack: false,
   potion: false,
+  jump: false,
   interact: false,
 };
 
@@ -115,6 +117,7 @@ export function parseInput(raw: unknown): ServerInput | null {
     dodge: (flags & FLAG_DODGE) !== 0,
     attack: (flags & FLAG_ATTACK) !== 0,
     potion: (flags & FLAG_POTION) !== 0,
+    jump: (flags & FLAG_JUMP) !== 0,
     interact: (flags & FLAG_INTERACT) !== 0,
   };
 }
@@ -152,6 +155,7 @@ export interface WorldPlayer extends CreatureTarget {
   chestRetryAt: number;
   achievements: Set<string>;
   selfChanged: boolean;
+  eventsSeen: number;
 }
 
 /** How the world reaches everything outside it. */
@@ -224,6 +228,9 @@ interface QueuedEvent {
   z: number;
   /** The player it's about, who always gets it wherever they are. 0 for no one. */
   about: number;
+  /** Counts up, so each player gets each event once whenever their snapshot goes out. */
+  order: number;
+  tick: number;
 }
 
 function round2(value: number): number {
@@ -241,10 +248,13 @@ export class World {
   private nextPlayerId = 1;
   private nextProjectileId = 1;
   private events: QueuedEvent[] = [];
+  private eventCount = 0;
   private snapshotList = '[]';
   private snapshotStamp = 0;
   private scratch: Creature[] = [];
   private scratchDistance = new Map<Creature, number>();
+  private nearCreatures: Creature[] = [];
+  private nearDistances: number[] = [];
 
   constructor(
     private hooks: WorldHooks,
@@ -289,6 +299,7 @@ export class World {
       chestRetryAt: 0,
       achievements: new Set(setup.achievements),
       selfChanged: false,
+      eventsSeen: this.eventCount,
       gone: false,
       attackers: 0,
     };
@@ -357,7 +368,7 @@ export class World {
   }
 
   private isBusy({ state }: WorldPlayer): boolean {
-    return state.dodgeTime > 0 || state.attackTime > 0 || state.staggerTime > 0 || state.drinkTime > 0;
+    return state.dodgeTime > 0 || state.attackTime > 0 || state.staggerTime > 0 || state.drinkTime > 0 || state.jumpTime > 0;
   }
 
   /** One step of the shared movement rules, firing the attack at the exact step it reaches its hit moment. */
@@ -732,7 +743,8 @@ export class World {
   /* Snapshots. */
 
   private emit(event: GameEvent, x: number, z: number, about: number): void {
-    this.events.push({ text: JSON.stringify(event), x, z, about });
+    this.eventCount += 1;
+    this.events.push({ text: JSON.stringify(event), x, z, about, order: this.eventCount, tick: this.tickNumber });
   }
 
   /** Call before a round of snapshotFor: what's the same for everyone is built only once. */
@@ -742,14 +754,22 @@ export class World {
     this.snapshotList = JSON.stringify(list);
   }
 
-  /** Call after a round of snapshotFor. */
+  /**
+   * Call after a round of snapshotFor. Players take turns between ticks, so this tick's events stay
+   * for the ones whose snapshot goes out next tick. Anything older has reached everyone by now.
+   */
   endSnapshots(): void {
-    this.events.length = 0;
+    const { events, tickNumber } = this;
+    let kept = 0;
+    for (const event of events) {
+      if (event.tick === tickNumber) events[kept++] = event;
+    }
+    events.length = kept;
   }
 
   snapshotFor(player: WorldPlayer): string {
     const { state } = player;
-    let text = `{"t":"s","a":${player.lastSeq},"p":${this.snapshotList},"c":[${this.nearbyCreatures(state).join(',')}]`;
+    let text = `{"t":"s","a":${player.lastSeq},"p":${this.snapshotList},"c":[${this.nearbyCreatures(state)}]`;
     const events = this.eventsFor(player);
     if (events.length > 0) text += `,"e":[${events.join(',')}]`;
     return `${text}}`;
@@ -765,34 +785,53 @@ export class World {
     return c.packed;
   }
 
-  private nearbyCreatures(state: SimState): string[] {
-    const near: { c: Creature; d: number }[] = [];
+  private nearbyCreatures(state: SimState): string {
+    // This runs for every player in every snapshot, so it keeps a short sorted list as it goes
+    // instead of sorting everything in view, and reuses the same two arrays.
+    const near = this.nearCreatures;
+    const distances = this.nearDistances;
+    let count = 0;
     const limit = CREATURE_VIEW_RADIUS * CREATURE_VIEW_RADIUS;
     for (const c of this.field.creatures) {
       if (c.mode === Mode.Gone) continue;
       const dx = c.x - state.x;
       const dz = c.z - state.z;
       const d = dx * dx + dz * dz;
-      if (d <= limit) near.push({ c, d });
+      if (d > limit) continue;
+      if (count === CREATURES_PER_SNAPSHOT) {
+        if (d >= distances[count - 1]) continue;
+        count -= 1;
+      }
+      let spot = count;
+      while (spot > 0 && distances[spot - 1] > d) {
+        near[spot] = near[spot - 1];
+        distances[spot] = distances[spot - 1];
+        spot -= 1;
+      }
+      near[spot] = c;
+      distances[spot] = d;
+      count += 1;
     }
-    if (near.length > CREATURES_PER_SNAPSHOT) {
-      near.sort((a, b) => a.d - b.d);
-      near.length = CREATURES_PER_SNAPSHOT;
+    let text = '';
+    for (let index = 0; index < count; index += 1) {
+      text += index === 0 ? this.packCreature(near[index]) : `,${this.packCreature(near[index])}`;
     }
-    return near.map((entry) => this.packCreature(entry.c));
+    return text;
   }
 
   private eventsFor(player: WorldPlayer): string[] {
     const chosen: string[] = [];
+    const seen = player.eventsSeen;
+    player.eventsSeen = this.eventCount;
     // Your own come first, so a crowd's effects can't push out what happened to you.
     for (const event of this.events) {
-      if (event.about !== player.id) continue;
+      if (event.order <= seen || event.about !== player.id) continue;
       if (chosen.length >= EVENTS_PER_SNAPSHOT) return chosen;
       chosen.push(event.text);
     }
     const limit = EVENT_VIEW_RADIUS * EVENT_VIEW_RADIUS;
     for (const event of this.events) {
-      if (event.about === player.id) continue;
+      if (event.order <= seen || event.about === player.id) continue;
       const dx = event.x - player.state.x;
       const dz = event.z - player.state.z;
       if (dx * dx + dz * dz > limit) continue;

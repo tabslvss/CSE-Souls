@@ -1,5 +1,7 @@
 import { artUrl } from '../art';
+import type { InputDevice } from '../game/inputDevice';
 import { Icon } from './Icon';
+import { ActionGlyph, hasGlyph, useInputDevice, type InputAction } from './InputGlyph';
 
 /** A preview of the in-game display: health, magic and stamina, with healing potions beside them. */
 export function HudPreview() {
@@ -18,28 +20,39 @@ export function HudPreview() {
   );
 }
 
-const CONTROLS: Array<[string[], string]> = [
-  [['W', 'A', 'S', 'D'], 'Move'],
-  [['Mouse'], 'Look around'],
-  [['Shift'], 'Run'],
-  [['Space'], 'Dodge'],
-  [['Left click'], 'Attack'],
-  [['Right click'], 'Block'],
-  [['Q'], 'Use healing potion'],
-  [['E'], 'Interact'],
+/** Only what really works in the game right now. The pause menu shows this same list. */
+const CONTROLS: Array<{ action: InputAction; label: string; padLabel?: string }> = [
+  { action: 'move', label: 'Move' },
+  { action: 'look', label: 'Look around' },
+  { action: 'run', label: 'Run', padLabel: 'Run (hold)' },
+  { action: 'jump', label: 'Jump' },
+  { action: 'roll', label: 'Dodge roll', padLabel: 'Dodge roll (tap)' },
+  { action: 'attack', label: 'Attack' },
+  { action: 'lock', label: 'Lock on to an enemy' },
+  { action: 'potion', label: 'Drink a healing potion' },
+  { action: 'interact', label: 'Open a chest' },
+  { action: 'zoom', label: 'Camera distance' },
+  { action: 'pause', label: 'Pause' },
 ];
 
+/** The rows for this device. Actions with no button on it are left out. */
+export function controlsFor(device: InputDevice): Array<{ action: InputAction; label: string }> {
+  return CONTROLS.filter(({ action }) => hasGlyph(action, device)).map(({ action, label, padLabel }) => ({
+    action,
+    label: device === 'keyboard' ? label : padLabel ?? label,
+  }));
+}
+
 export function ControlsList() {
+  const device = useInputDevice();
   return (
     <dl className="controls">
-      {CONTROLS.map(([keys, action]) => (
+      {controlsFor(device).map(({ action, label }) => (
         <div key={action} className="controls__row">
           <dt>
-            {keys.map((key) => (
-              <kbd key={key}>{key}</kbd>
-            ))}
+            <ActionGlyph action={action} />
           </dt>
-          <dd>{action}</dd>
+          <dd>{label}</dd>
         </div>
       ))}
     </dl>

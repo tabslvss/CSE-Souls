@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { WEAPON_STYLES, type WeaponStyle } from '../../../../shared/combat';
 import { ATLAS } from './atlas';
 import { CorpseDissolver } from './dissolve';
+import { HealRibbons } from './healRibbons';
 import {
   COLLECTOR_SLOTS, FACE_BASE, FACE_CAMERA, FACE_DIGIT, FACE_GROUND, FACE_VELOCITY, MOVE_COLLECT, MOVE_ORBIT, ParticlePool,
   type ParticleSpec,
@@ -154,6 +155,7 @@ export class GameFx {
   private readonly pool: ParticlePool;
   private readonly trails: TrailPool;
   private readonly corpses = new CorpseDissolver();
+  private readonly healing: HealRibbons;
   private readonly atlas: THREE.Texture;
   private readonly digits: THREE.Texture;
   private readonly lights: LightSlot[] = [];
@@ -191,6 +193,7 @@ export class GameFx {
     const phone = window.matchMedia('(pointer: coarse)').matches;
     this.pool = new ParticlePool(this.atlas, this.digits, phone ? CAPACITY_PHONE : CAPACITY_DESKTOP, SPRITE.glow);
     scene.add(this.pool.mesh);
+    this.healing = new HealRibbons(scene, this.pool);
 
     const color = (values: readonly [number, number, number]) => new THREE.Color(values[0], values[1], values[2]);
     this.trails = new TrailPool(
@@ -231,6 +234,7 @@ export class GameFx {
     this.pool.update(seconds);
     this.trails.update(seconds);
     this.corpses.update(seconds);
+    this.healing.update(seconds);
     const fog = this.scene.fog;
     if (fog instanceof THREE.Fog) this.pool.setFog(fog.near, fog.far, fog.color);
 
@@ -277,6 +281,7 @@ export class GameFx {
     this.pool.dispose();
     this.trails.dispose();
     this.corpses.dispose();
+    this.healing.dispose();
     this.atlas.dispose();
     this.digits.dispose();
     this.arrows.geometry.dispose();
@@ -1151,7 +1156,7 @@ export class GameFx {
     if (styleName(style) !== 'magic') return;
     const now = this.pool.now;
     const fresh = now - this.lastCast > 0.25;
-    this.castCarry = fresh ? 14 : this.castCarry + (now - this.lastCast) * 70;
+    this.castCarry = fresh ? 20 : this.castCarry + (now - this.lastCast) * 70;
     this.lastCast = now;
     const count = Math.min(16, this.castCarry | 0);
     this.castCarry -= count;
@@ -1334,7 +1339,8 @@ export class GameFx {
       s.rotation = rand(0, 6.28);
       s.spin = rand(-0.7, 0.7);
       s.life = rand(0.55, 1) * (0.7 + scale * 0.4);
-      s.alpha = rand(0.26, 0.42);
+      // A roll puffs so often that the puffs overlap, so each one has to be fainter.
+      s.alpha = rand(0.26, 0.42) * (kind === 'roll' ? 0.55 : 1);
       setColor(s, DUST, DUST_DARK);
       this.pool.emit();
     }
@@ -1564,6 +1570,22 @@ export class GameFx {
     g.fadeOut = 0.3;
     setColor(g, HEAL, HEAL_DEEP);
     this.pool.emit();
+  }
+
+  /** Ribbons and a ground glow that stay with someone while they drink. feet is read every frame. */
+  healStart(id: number, feet: Position): void {
+    this.healing.start(id, feet);
+  }
+
+  /** The health has arrived. */
+  healPulse(id: number, feet: Position): void {
+    this.healing.pulse(id);
+    this.potion(feet);
+  }
+
+  /** The drink is over, or was spilled. */
+  healEnd(id: number): void {
+    this.healing.end(id);
   }
 
   private risingSwirl(pos: Position, count: number, radius: number, from: readonly number[], to: readonly number[], life: number): void {

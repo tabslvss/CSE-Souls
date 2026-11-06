@@ -1397,6 +1397,54 @@
   color: var(--text-2);
 }
 
+/* A small bar over a creature that was just hit, with what you've dealt so far above its right end. */
+.foe-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 92px;
+  will-change: transform;
+  display: grid;
+  justify-items: end;
+  gap: 1px;
+}
+
+.foe-bar__number {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  line-height: 1;
+  color: #f1e3c4;
+  text-shadow:
+    0 0 3px #000,
+    0 1px 2px #000;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+.foe-bar__track {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  background: rgba(6, 5, 4, 0.85);
+  box-shadow: 0 0 0 1px rgba(170, 140, 90, 0.55);
+}
+
+.foe-bar__track i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+}
+
+.foe-bar__fill {
+  background: #a32c26;
+  transition: width 0.08s linear;
+}
+
+.foe-bar__chip {
+  background: #e8cf98;
+  transition: width 0.55s ease 0.3s;
+}
+
 .nameplate--self {
   visibility: hidden;
 }
@@ -1503,6 +1551,120 @@
   color: var(--gold-pale);
 }
 
+.bar--game .bar__fill {
+  transition: width 0.12s linear;
+}
+
+.bar--game .bar__chip {
+  background: #e8dcc0;
+  transition: width 0.6s ease 0.35s;
+}
+
+.game__prompt {
+  position: absolute;
+  top: 64%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 16px;
+  background: rgba(8, 7, 6, 0.72);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--gold-pale);
+  pointer-events: none;
+}
+
+.game__notice {
+  position: absolute;
+  top: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 18px;
+  background: rgba(8, 7, 6, 0.8);
+  box-shadow: inset 0 0 0 1px var(--gold);
+  color: var(--gold-pale);
+  pointer-events: none;
+  animation: game-notice 3.6s ease both;
+}
+
+@keyframes game-notice {
+  0% { opacity: 0; }
+  8% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* A wide dark band, with the word opening up across it. */
+.game__banner,
+.game__death {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 34%;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 18px 0 16px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(4, 3, 2, 0.74) 22%, rgba(4, 3, 2, 0.74) 78%, transparent);
+}
+
+.game__banner {
+  animation: game-banner 2.6s ease both;
+}
+
+.game__banner strong,
+.game__death strong {
+  font-family: var(--font-display);
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.34em;
+  margin-right: -0.34em;
+  color: #e2bd6f;
+  text-shadow: 0 0 22px rgba(226, 170, 80, 0.45);
+  animation: game-banner-word 2.6s ease-out both;
+}
+
+.game__banner small,
+.game__death small {
+  color: var(--text-2);
+  font-size: 1rem;
+}
+
+.game__death {
+  animation: game-death-in 0.9s ease both;
+}
+
+.game__death strong {
+  color: #b23a30;
+  text-shadow: 0 0 26px rgba(170, 30, 20, 0.5);
+  letter-spacing: 0.3em;
+  animation: none;
+  text-transform: uppercase;
+}
+
+@keyframes game-banner {
+  0% { opacity: 0; }
+  10% { opacity: 1; }
+  78% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes game-banner-word {
+  0% { letter-spacing: 0.1em; margin-right: -0.1em; }
+  100% { letter-spacing: 0.42em; margin-right: -0.42em; }
+}
+
+@keyframes game-death-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game__banner strong {
+    animation: none;
+  }
+}
+
 .game__menu {
   position: absolute;
   inset: 0;
@@ -1516,6 +1678,8 @@
   justify-items: center;
   gap: 18px;
   width: min(92vw, 420px);
+  max-height: 94vh;
+  overflow-y: auto;
   padding: 30px;
   background: linear-gradient(180deg, rgba(26, 22, 16, 0.96), rgba(12, 10, 8, 0.97));
   box-shadow:
@@ -1549,6 +1713,24 @@
   color: var(--text-2);
 }
 
+.game__settings {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  color: var(--text-2);
+}
+
+.game__settings label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.game__settings input {
+  accent-color: var(--gold);
+}
+
 .game__menu-links {
   display: flex;
   gap: 22px;
@@ -1577,4 +1759,10 @@
   width: min(68vw, 760px);
   height: auto;
   margin-inline: auto;
+}
+
+/* A controller moves focus without a pointer or keyboard, so browsers may not show it on their own. */
+.game__menu-card :is(button, a, input):focus {
+  outline: 2px solid var(--gold-pale);
+  outline-offset: 2px;
 }

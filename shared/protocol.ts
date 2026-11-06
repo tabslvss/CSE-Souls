@@ -15,7 +15,7 @@ export interface PlayerInfo {
 /**
  * One player inside a snapshot, as a compact array:
  * id, x, z, yaw, stamina, moving, dodgeTime, attackTime, attackCount, dodgeX, dodgeZ, regenDelay,
- * health, magic, staggerTime, knockX, knockZ, deadTime, potions, drinkTime
+ * health, magic, staggerTime, knockX, knockZ, deadTime, potions, drinkTime, jumpTime
  */
 export type PlayerSnapshot = [
   id: number,
@@ -38,6 +38,7 @@ export type PlayerSnapshot = [
   deadTime: number,
   potions: number,
   drinkTime: number,
+  jumpTime: number,
 ];
 
 function round(value: number): number {
@@ -67,13 +68,14 @@ export function packSnapshot(id: number, s: SimState): PlayerSnapshot {
     round(s.deadTime),
     s.potions,
     round(s.drinkTime),
+    round(s.jumpTime),
   ];
 }
 
 export function applySnapshot(entry: PlayerSnapshot, state: SimState): void {
   [, state.x, state.z, state.yaw, state.stamina, state.moving, state.dodgeTime, state.attackTime, state.attackCount,
     state.dodgeX, state.dodgeZ, state.regenDelay, state.health, state.magic, state.staggerTime, state.knockX,
-    state.knockZ, state.deadTime, state.potions, state.drinkTime] = entry;
+    state.knockZ, state.deadTime, state.potions, state.drinkTime, state.jumpTime] = entry;
 }
 
 /** One creature inside a snapshot: id, kind (index into CREATURES), x, z, yaw, state (CreatureState), health percent. */
@@ -138,7 +140,8 @@ export const FLAG_DODGE = 2;
 export const FLAG_ATTACK = 4;
 export const FLAG_POTION = 8;
 export const FLAG_INTERACT = 16;
-export const MAX_FLAGS = FLAG_RUN | FLAG_DODGE | FLAG_ATTACK | FLAG_POTION | FLAG_INTERACT;
+export const FLAG_JUMP = 32;
+export const MAX_FLAGS = FLAG_RUN | FLAG_DODGE | FLAG_ATTACK | FLAG_POTION | FLAG_INTERACT | FLAG_JUMP;
 
 export const WS_CLOSE_REPLACED = 4003;
 export const WS_CLOSE_EXPIRED = 4001;

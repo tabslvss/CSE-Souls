@@ -17,8 +17,16 @@ const RUN_MULTIPLIER = 1.75;
 const DODGE_SPEED = 9;
 export const DODGE_SECONDS = 0.5;
 const DODGE_COST = 20;
-const POTION_SECONDS = 0.9;
+/** How long a drink lasts. The health arrives part way through, so a hit before then loses it. */
+export const DRINK_SECONDS = 1.4;
+const DRINK_HEAL_AT = 0.55;
+/** The value of drinkTime at the moment the health arrives. */
+export const DRINK_HEAL_TIME = DRINK_SECONDS * (1 - DRINK_HEAL_AT);
 const POTION_HEAL_SHARE = 0.45;
+/** A jump is only a timer and a picture: nothing in the rules knows about height. */
+export const JUMP_SECONDS = 0.7;
+const JUMP_COST = 15;
+const JUMP_HEIGHT = 0.85;
 export const STAGGER_SECONDS = 0.35;
 const KNOCKBACK_SPEED = 5;
 export const STARTING_POTIONS = 3;
@@ -41,6 +49,7 @@ export interface SimInput {
   attack: boolean;
   /** Drink a healing potion. */
   potion: boolean;
+  jump: boolean;
 }
 
 export interface SimState {
@@ -66,6 +75,8 @@ export interface SimState {
   deadTime: number;
   potions: number;
   drinkTime: number;
+  /** Above 0 while in the air. Keeps counting through a stagger or a death, so the body still comes down. */
+  jumpTime: number;
 }
 
 export interface Derived {
@@ -124,6 +135,7 @@ export function createState(x: number, z: number, derived: Derived): SimState {
     deadTime: 0,
     potions: STARTING_POTIONS,
     drinkTime: 0,
+    jumpTime: 0,
   };
 }
 
@@ -131,18 +143,23 @@ export function stepPlayer(state: SimState, input: SimInput, derived: Derived, d
   state.dodgeTime = Math.max(0, state.dodgeTime - dt);
   state.attackTime = Math.max(0, state.attackTime - dt);
   state.regenDelay = Math.max(0, state.regenDelay - dt);
+  const drinkBefore = state.drinkTime;
   state.drinkTime = Math.max(0, state.drinkTime - dt);
+  state.jumpTime = Math.max(0, state.jumpTime - dt);
   state.magic = Math.min(derived.maxMagic, state.magic + derived.magicRegen * dt);
 
   // Dead players stay put, and the server decides when they come back.
   if (state.deadTime > 0) {
     state.moving = 0;
+    state.drinkTime = 0;
     return;
   }
 
   // Knocked off balance: no control until it passes.
   if (state.staggerTime > 0) {
     state.staggerTime = Math.max(0, state.staggerTime - dt);
+    // The drink is spilled, along with any health that hadn't arrived yet.
+    state.drinkTime = 0;
     state.x += state.knockX * KNOCKBACK_SPEED * dt;
     state.z += state.knockZ * KNOCKBACK_SPEED * dt;
     state.moving = 0;
@@ -156,7 +173,11 @@ export function stepPlayer(state: SimState, input: SimInput, derived: Derived, d
   const mz = input.mz * scale;
   const wantsToMove = length > 0.01;
 
-  const isBusy = state.dodgeTime > 0 || state.attackTime > 0 || state.drinkTime > 0;
+  if (drinkBefore > DRINK_HEAL_TIME && state.drinkTime <= DRINK_HEAL_TIME) {
+    state.health = Math.min(derived.maxHealth, state.health + derived.maxHealth * POTION_HEAL_SHARE);
+  }
+
+  const isBusy = state.dodgeTime > 0 || state.attackTime > 0 || state.drinkTime > 0 || state.jumpTime > 0;
   const attackPool = derived.usesMagic ? state.magic : state.stamina;
   if (input.dodge && !isBusy && state.stamina >= DODGE_COST) {
     state.stamina -= DODGE_COST;
@@ -182,8 +203,11 @@ export function stepPlayer(state: SimState, input: SimInput, derived: Derived, d
     state.attackCount = (state.attackCount + 1) % 1024;
   } else if (input.potion && !isBusy && state.potions > 0 && state.health < derived.maxHealth) {
     state.potions -= 1;
-    state.drinkTime = POTION_SECONDS;
-    state.health = Math.min(derived.maxHealth, state.health + derived.maxHealth * POTION_HEAL_SHARE);
+    state.drinkTime = DRINK_SECONDS;
+  } else if (input.jump && !isBusy && state.stamina >= JUMP_COST) {
+    state.stamina -= JUMP_COST;
+    state.regenDelay = REGEN_DELAY_SECONDS;
+    state.jumpTime = JUMP_SECONDS;
   }
 
   let moved = 0;
@@ -226,16 +250,24 @@ export function isInvulnerable(state: SimState, derived: Derived): boolean {
   return state.deadTime > 0 || (state.dodgeTime > 0 && state.dodgeTime > DODGE_SECONDS - derived.dodgeInvulnerable);
 }
 
-export type AnimationId = 'idle' | 'walk' | 'run' | 'dodge' | 'attack' | 'hit' | 'death' | 'drink';
+/** How high to draw a player, in meters, from jumpTime. Only for the picture. */
+export function jumpHeight(jumpTime: number): number {
+  if (jumpTime <= 0) return 0;
+  const through = Math.min(1, Math.max(0, 1 - jumpTime / JUMP_SECONDS));
+  return JUMP_HEIGHT * 4 * through * (1 - through);
+}
+
+export type AnimationId = 'idle' | 'walk' | 'run' | 'dodge' | 'attack' | 'hit' | 'death' | 'drink' | 'jump';
 
 export function animationFor(
-  state: Pick<SimState, 'dodgeTime' | 'attackTime' | 'moving' | 'deadTime' | 'staggerTime' | 'drinkTime'>,
+  state: Pick<SimState, 'dodgeTime' | 'attackTime' | 'moving' | 'deadTime' | 'staggerTime' | 'drinkTime' | 'jumpTime'>,
 ): AnimationId {
   if (state.deadTime > 0) return 'death';
   if (state.staggerTime > 0) return 'hit';
   if (state.dodgeTime > 0) return 'dodge';
   if (state.attackTime > 0) return 'attack';
   if (state.drinkTime > 0) return 'drink';
+  if (state.jumpTime > 0) return 'jump';
   if (state.moving === 2) return 'run';
   if (state.moving === 1) return 'walk';
   return 'idle';

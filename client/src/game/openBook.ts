@@ -23,12 +23,10 @@ const PAGE_SURFACE: readonly (readonly [number, number])[] = [
   [0.135, 0.021],
   [WIDTH / 2 - PAGES_INSET, 0.017],
 ];
-const LOOSE_PAGE_BEND: readonly (readonly [number, number])[] = [
-  [0, 0],
-  [0.04, 0.008],
-  [0.1, 0.005],
-  [WIDTH / 2 - PAGES_INSET - 0.002, 0],
-];
+// The loose leaf is a chain of strips that bend at each join, so that it curves as it lifts, as paper does,
+// and never stands up from the spine as one flat shard. Each angle is relative to the strip before it.
+const LEAF_WIDTH = (WIDTH / 2 - PAGES_INSET - 0.002) / 4;
+const LEAF_REST = [0.42, -0.32, -0.2, -0.2];
 
 // The atlas: pages across the top, stacked page edges in the band below.
 const ATLAS = 128;
@@ -215,25 +213,21 @@ function pageBlock(side: number): THREE.BufferGeometry {
   return finish(positions, uvs);
 }
 
-/** A single leaf with a little curl, facing both ways, hinged at x = 0. */
-function loosePage(): THREE.BufferGeometry {
+/** One strip of the loose leaf, facing both ways, from its hinge at x = 0. Index says which strip of the page it shows. */
+function leafStrip(index: number): THREE.BufferGeometry {
   const positions: number[] = [];
   const uvs: number[] = [];
   const top = (HEIGHT - 0.014) / 2;
-  for (let i = 0; i + 1 < LOOSE_PAGE_BEND.length; i += 1) {
-    const [x0, z0] = LOOSE_PAGE_BEND[i];
-    const [x1, z1] = LOOSE_PAGE_BEND[i + 1];
-    const u0 = pageU(1, x0);
-    const u1 = pageU(1, x1);
-    const v0 = pageV(-top);
-    const v1 = pageV(top);
-    const a: [number, number, number] = [x0, -top, z0];
-    const b: [number, number, number] = [x1, -top, z1];
-    const c: [number, number, number] = [x1, top, z1];
-    const d: [number, number, number] = [x0, top, z0];
-    pushQuad(positions, uvs, [a, b, c, d], [[u0, v0], [u1, v0], [u1, v1], [u0, v1]]);
-    pushQuad(positions, uvs, [a, d, c, b], [[1 - u0, v0], [1 - u0, v1], [1 - u1, v1], [1 - u1, v0]]);
-  }
+  const u0 = pageU(1, index * LEAF_WIDTH);
+  const u1 = pageU(1, (index + 1) * LEAF_WIDTH);
+  const v0 = pageV(-top);
+  const v1 = pageV(top);
+  const a: [number, number, number] = [0, -top, 0];
+  const b: [number, number, number] = [LEAF_WIDTH, -top, 0];
+  const c: [number, number, number] = [LEAF_WIDTH, top, 0];
+  const d: [number, number, number] = [0, top, 0];
+  pushQuad(positions, uvs, [a, b, c, d], [[u0, v0], [u1, v0], [u1, v1], [u0, v1]]);
+  pushQuad(positions, uvs, [a, d, c, b], [[1 - u0, v0], [1 - u0, v1], [1 - u1, v1], [1 - u1, v0]]);
   return finish(positions, uvs);
 }
 
@@ -274,25 +268,40 @@ export function createOpenBook(): THREE.Object3D {
   const hinge = new THREE.Group();
   hinge.position.set(0, 0, 0.022);
   hinge.rotation.y = -FOLD;
-  const lift = new THREE.Group();
-  lift.name = 'loose-page';
-  lift.add(new THREE.Mesh(loosePage(), pages));
-  hinge.add(lift);
+  const joints: THREE.Group[] = [];
+  let parent: THREE.Object3D = hinge;
+  for (let i = 0; i < LEAF_REST.length; i += 1) {
+    const joint = new THREE.Group();
+    joint.name = 'loose-page';
+    if (i > 0) joint.position.x = LEAF_WIDTH;
+    joint.rotation.y = -LEAF_REST[i];
+    joint.add(new THREE.Mesh(leafStrip(i), pages));
+    parent.add(joint);
+    parent = joint;
+    joints.push(joint);
+  }
   book.add(hinge);
-  book.userData.loosePage = lift;
+  book.userData.loosePage = joints;
   return book;
 }
 
+// When the loose page lifts during an attack, as shares of the attack, and how far in radians.
+const CAST_START = 0.48;
+const CAST_PEAK = 0.6;
+const CAST_LIFT = 0.75;
+// How much each outer strip trails behind the lift, so that the edge of the leaf arrives last.
+const CAST_TRAIL = 0.24;
+
 /** The loose page stirs a little all the time, and lifts and falls back during a cast. */
 export function animateOpenBook(book: THREE.Object3D, clock: number, attackPhase: number): void {
-  const page = book.userData.loosePage as THREE.Object3D | undefined;
-  if (!page) return;
+  const joints = book.userData.loosePage as THREE.Object3D[] | undefined;
+  if (!joints) return;
   const stir = 0.035 + Math.sin(clock * 1.3) * 0.02 + Math.sin(clock * 3.1) * 0.01;
+  // Blown up fast by the release, not before it, and falling back slowly.
   let cast = 0;
-  if (attackPhase >= 0.3) {
-    const u = Math.min(1, (attackPhase - 0.3) / 0.7);
-    // Blown up fast by the release, and falling back slowly.
-    cast = u < 0.35 ? THREE.MathUtils.smoothstep(u, 0, 0.35) : 1 - THREE.MathUtils.smoothstep(u, 0.35, 1);
+  if (attackPhase >= CAST_START) {
+    cast = attackPhase < CAST_PEAK ? THREE.MathUtils.smoothstep(attackPhase, CAST_START, CAST_PEAK) : 1 - THREE.MathUtils.smoothstep(attackPhase, CAST_PEAK, 1);
   }
-  page.rotation.y = -(stir + cast * 1.25);
+  joints[0].rotation.y = -(LEAF_REST[0] + stir + cast * CAST_LIFT);
+  for (let i = 1; i < joints.length; i += 1) joints[i].rotation.y = -(LEAF_REST[i] - cast * CAST_TRAIL);
 }
