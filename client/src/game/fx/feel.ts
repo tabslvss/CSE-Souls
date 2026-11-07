@@ -38,6 +38,26 @@ export function landHit(parts: FeelParts, pos: Position, dirYaw: number, style: 
   parts.vhs.impact(kill ? 1 : heavy ? 0.6 : 0.3);
 }
 
+const blastSpot = { x: 0, y: 0 };
+
+/**
+ * A meteor landing. Everyone nearby feels this one, not only its caster: it's the biggest thing that
+ * can happen near you. It shakes less the further away you are.
+ */
+export function meteorBlast(parts: FeelParts, id: number, x: number, z: number, radius: number, distance: number, mine: boolean): void {
+  parts.fx.arcane.meteorEnd(id, x, z, radius);
+  sound.meteorImpact({ x, z });
+  const near = Math.max(0, 1 - distance / (radius * 6));
+  if (near <= 0) return;
+  parts.camera.shake(0.3 + near * 0.7);
+  parts.camera.fovKick(1 + near * 3);
+  parts.vhs.glitch(0.2 + near * 0.6);
+  parts.vhs.echo(0.2 + near * 0.5);
+  parts.vhs.impact(near);
+  if (mine) parts.camera.hitstop(0.09);
+  if (parts.fx.arcane.screenSpot(x, parts.fx.groundY + 1.5, z, blastSpot)) parts.vhs.lens(blastSpot.x, blastSpot.y, near);
+}
+
 /** You took a hit. share is the part of your health it cost, 0 to 1. fromYaw is the attacker's yaw. */
 export function takeHit(parts: FeelParts, fromYaw: number, share: number): void {
   sound.playGame('hit-player', { duck: Math.min(0.7, share * 1.5) });

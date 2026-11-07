@@ -12,6 +12,7 @@ import {
   XSRF_HEADER,
 } from '../shared/http.js';
 import { CLASSES, DEFAULT_APPEARANCE, findClass, sanitizeAppearance } from '../../../shared/classes.js';
+import { parseSlot, SAVE_SLOTS } from '../../../shared/graces.js';
 import { SESSION_COOKIE, verifySessionToken } from '../shared/jwt.js';
 import { log } from '../shared/logger.js';
 import {
@@ -32,7 +33,7 @@ import {
   renderEmblem,
 } from './avatarSources.js';
 import { loadPublicKey } from './keys.js';
-import { attachRealtime, onlineCount } from './realtime.js';
+import { attachRealtime, canSwitchSave, onlineCount, seatedSlot } from './realtime.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC_DIR = path.resolve('public');
@@ -95,10 +96,13 @@ async function grantAchievement(userId: string, achievementId: string): Promise<
   return rows;
 }
 
+// A profile shows the save being played. Someone with no character yet shows the starting numbers.
 const PLAYER_COLUMNS = `
   u.id, u.username, u.created_at,
-  p.avatar_file, p.class_id, p.level, p.xp, p.binary_dust,
-  p.strength, p.dexterity, p.arcane, p.speed, p.stamina, p.health,
+  p.avatar_file, c.class_id,
+  COALESCE(c.level, 1) AS level, COALESCE(c.xp, 0) AS xp, COALESCE(c.binary_dust, 0) AS binary_dust,
+  COALESCE(c.strength, 10) AS strength, COALESCE(c.dexterity, 10) AS dexterity, COALESCE(c.arcane, 10) AS arcane,
+  COALESCE(c.speed, 10) AS speed, COALESCE(c.stamina, 10) AS stamina, COALESCE(c.health, 10) AS health,
   s.enemies_killed, s.animals_hunted, s.boss_kills, s.boss_damage, s.deaths`;
 
 async function loadPlayer(where: string, value: string) {
@@ -107,6 +111,7 @@ async function loadPlayer(where: string, value: string) {
      FROM users u
      JOIN player_profiles p ON p.user_id = u.id
      JOIN player_stats s ON s.user_id = u.id
+     LEFT JOIN character_saves c ON c.user_id = u.id AND c.slot = p.active_slot
      WHERE ${where}`,
     [value],
   );
@@ -158,8 +163,11 @@ app.get('/api/session', async (req, res) => {
     res.json({ user: null });
     return;
   }
-  const { rows } = await pool.query<{ avatar_file: string | null; level: number; class_id: string | null }>(
-    'SELECT avatar_file, level, class_id FROM player_profiles WHERE user_id = $1',
+  const { rows } = await pool.query<{ avatar_file: string | null; level: number | null; class_id: string | null }>(
+    `SELECT p.avatar_file, c.level, c.class_id
+     FROM player_profiles p
+     LEFT JOIN character_saves c ON c.user_id = p.user_id AND c.slot = p.active_slot
+     WHERE p.user_id = $1`,
     [req.auth.sub],
   );
   const profile = rows[0];
@@ -202,39 +210,153 @@ app.get('/api/classes', (_req, res) => {
   res.json({ classes: CLASSES });
 });
 
+async function activeSlot(userId: string): Promise<number> {
+  const { rows } = await pool.query<{ active_slot: number }>(
+    'SELECT active_slot FROM player_profiles WHERE user_id = $1',
+    [userId],
+  );
+  return rows[0]?.active_slot ?? 1;
+}
+
+const NO_SLOT = 'There is no save with that number.';
+const REST_FIRST = 'Rest at a Binary Grace before changing to another save.';
+
+// Every query below is keyed by the id in the verified session, so a slot number can only ever
+// mean one of the logged-in player's own saves. Another account's saves can't be named at all.
 app.get('/api/character', requireAuth, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  const { rows } = await pool.query<{ class_id: string | null; appearance: unknown }>(
-    'SELECT class_id, appearance FROM player_profiles WHERE user_id = $1',
-    [req.auth!.sub],
+  // Query strings are always text, so only these exact forms count as a slot.
+  const asked = req.query.slot;
+  const slot = asked === undefined ? await activeSlot(req.auth!.sub) : parseSlot(/^[1-9]$/.test(String(asked)) ? Number(asked) : null);
+  if (slot === null) {
+    res.status(400).json({ error: NO_SLOT });
+    return;
+  }
+  const { rows } = await pool.query<{ class_id: string; appearance: unknown }>(
+    'SELECT class_id, appearance FROM character_saves WHERE user_id = $1 AND slot = $2',
+    [req.auth!.sub, slot],
   );
   const row = rows[0];
   res.json({
-    character: row?.class_id
+    character: row
       ? { classId: row.class_id, appearance: sanitizeAppearance(row.appearance) ?? DEFAULT_APPEARANCE }
       : null,
   });
 });
 
-// Picking a class sets that class's starting stats. Upgrades don't exist yet, so nothing is lost.
+// Saving makes this the save in play. A character whose stats were raised keeps its class and stats,
+// so this route can't be used to undo upgrades or get a free class change: only its looks can change.
+const SAVE_CHARACTER_SQL = `
+  WITH saved AS (
+    INSERT INTO character_saves AS c (user_id, slot, class_id, appearance, strength, dexterity, arcane, speed, stamina, health)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (user_id, slot) DO UPDATE SET
+      class_id = EXCLUDED.class_id,
+      appearance = EXCLUDED.appearance,
+      strength = CASE WHEN c.level = 1 THEN EXCLUDED.strength ELSE c.strength END,
+      dexterity = CASE WHEN c.level = 1 THEN EXCLUDED.dexterity ELSE c.dexterity END,
+      arcane = CASE WHEN c.level = 1 THEN EXCLUDED.arcane ELSE c.arcane END,
+      speed = CASE WHEN c.level = 1 THEN EXCLUDED.speed ELSE c.speed END,
+      stamina = CASE WHEN c.level = 1 THEN EXCLUDED.stamina ELSE c.stamina END,
+      health = CASE WHEN c.level = 1 THEN EXCLUDED.health ELSE c.health END,
+      updated_at = NOW()
+    WHERE c.level = 1 OR c.class_id = EXCLUDED.class_id
+    RETURNING slot
+  ), active AS (
+    UPDATE player_profiles SET active_slot = $2, updated_at = NOW()
+    WHERE user_id = $1 AND EXISTS (SELECT 1 FROM saved)
+  )
+  SELECT slot FROM saved`;
+
 app.post('/api/character', ...stateChange, express.json({ limit: '2kb' }), async (req, res) => {
-  const { classId, appearance } = (req.body ?? {}) as { classId?: unknown; appearance?: unknown };
+  const { classId, appearance, slot: askedSlot } = (req.body ?? {}) as { classId?: unknown; appearance?: unknown; slot?: unknown };
   const definition = findClass(classId);
   const cleanAppearance = sanitizeAppearance(appearance);
-  if (!definition || !cleanAppearance) {
+  const userId = req.auth!.sub;
+  const slot = askedSlot === undefined ? await activeSlot(userId) : parseSlot(askedSlot);
+  if (!definition || !cleanAppearance || slot === null) {
     res.status(400).json({ error: 'That character could not be saved.' });
     return;
   }
+  // Saving another slot would change saves, which has the same rule as loading one.
+  const seated = seatedSlot(userId);
+  if (seated !== null && seated !== slot && !canSwitchSave(userId)) {
+    res.status(409).json({ error: REST_FIRST });
+    return;
+  }
   const { strength, dexterity, arcane, speed, stamina, health } = definition.baseStats;
-  await pool.query(
-    `UPDATE player_profiles
-     SET class_id = $2, appearance = $3, strength = $4, dexterity = $5, arcane = $6,
-         speed = $7, stamina = $8, health = $9, updated_at = NOW()
-     WHERE user_id = $1`,
-    [req.auth!.sub, definition.id, JSON.stringify(cleanAppearance), strength, dexterity, arcane, speed, stamina, health],
-  );
-  log('info', 'character_saved', { username: req.auth!.username, classId: definition.id });
+  const { rowCount } = await pool.query(SAVE_CHARACTER_SQL, [
+    userId, slot, definition.id, JSON.stringify(cleanAppearance), strength, dexterity, arcane, speed, stamina, health,
+  ]);
+  if (rowCount !== 1) {
+    res.status(409).json({
+      error: 'This character has raised its stats, so its class is fixed. Start a new character in another save to play a different class.',
+    });
+    return;
+  }
+  log('info', 'character_saved', { username: req.auth!.username, classId: definition.id, slot });
   res.json({ classId: definition.id, appearance: cleanAppearance });
+});
+
+// ---- Saves ------------------------------------------------------------------------------
+
+app.get('/api/saves', requireAuth, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const userId = req.auth!.sub;
+  const { rows } = await pool.query<{
+    slot: number;
+    class_id: string;
+    level: number;
+    binary_dust: string;
+    updated_at: Date;
+    graces: string;
+  }>(
+    `SELECT c.slot, c.class_id, c.level, c.binary_dust, c.updated_at,
+            (SELECT COUNT(*) FROM discovered_graces g WHERE g.user_id = c.user_id AND g.slot = c.slot) AS graces
+     FROM character_saves c WHERE c.user_id = $1`,
+    [userId],
+  );
+  const slots = Array.from({ length: SAVE_SLOTS }, (_, index) => {
+    const row = rows.find((item) => item.slot === index + 1);
+    return {
+      slot: index + 1,
+      character: row
+        ? {
+            classId: row.class_id,
+            level: row.level,
+            binaryDust: Number(row.binary_dust),
+            graces: Number(row.graces),
+            updatedAt: row.updated_at,
+          }
+        : null,
+    };
+  });
+  res.json({ active: await activeSlot(userId), slots });
+});
+
+// Only moves which save is in play. The next time this account enters the world, it loads that one.
+app.post('/api/saves/select', ...stateChange, express.json({ limit: '1kb' }), async (req, res) => {
+  const slot = parseSlot((req.body as { slot?: unknown } | undefined)?.slot);
+  if (slot === null) {
+    res.status(400).json({ error: NO_SLOT });
+    return;
+  }
+  const userId = req.auth!.sub;
+  if (!canSwitchSave(userId)) {
+    res.status(409).json({ error: REST_FIRST });
+    return;
+  }
+  const { rowCount } = await pool.query(
+    `UPDATE player_profiles SET active_slot = $2, updated_at = NOW()
+     WHERE user_id = $1 AND EXISTS (SELECT 1 FROM character_saves WHERE user_id = $1 AND slot = $2)`,
+    [userId, slot],
+  );
+  if (rowCount !== 1) {
+    res.status(404).json({ error: NO_SLOT });
+    return;
+  }
+  log('info', 'save_selected', { username: req.auth!.username, slot });
+  res.json({ active: slot });
 });
 
 // ---- Avatars ----------------------------------------------------------------------------
@@ -384,7 +506,7 @@ const LEADERBOARD_ORDER: Record<string, string> = {
   boss_kills: 's.boss_kills DESC, s.boss_damage DESC',
   boss_damage: 's.boss_damage DESC, s.boss_kills DESC',
   kills: 's.enemies_killed DESC, s.animals_hunted DESC',
-  level: 'p.level DESC, p.xp DESC',
+  level: 'COALESCE(best.level, 1) DESC, COALESCE(best.xp, 0) DESC',
 };
 
 app.get('/api/leaderboard', async (req, res) => {
@@ -398,11 +520,15 @@ app.get('/api/leaderboard', async (req, res) => {
   const { rows } = await pool.query(
     `SELECT ROW_NUMBER() OVER (ORDER BY ${order}, LOWER(u.username)) AS rank,
             COUNT(*) OVER () AS total,
-            u.username, p.avatar_file, p.level,
+            u.username, p.avatar_file, COALESCE(best.level, 1) AS level,
             s.boss_kills, s.boss_damage, s.enemies_killed, s.animals_hunted
      FROM users u
      JOIN player_profiles p ON p.user_id = u.id
      JOIN player_stats s ON s.user_id = u.id
+     -- An account ranks by its best save, so starting a new character doesn't cost a place.
+     LEFT JOIN LATERAL (
+       SELECT c.level, c.xp FROM character_saves c WHERE c.user_id = u.id ORDER BY c.level DESC, c.xp DESC LIMIT 1
+     ) best ON TRUE
      ORDER BY rank
      LIMIT $1 OFFSET $2`,
     [limit, offset],

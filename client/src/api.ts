@@ -62,6 +62,11 @@ export interface RealmStatus {
   bossKills: number;
 }
 
+export interface SaveSlot {
+  slot: number;
+  character: { classId: ClassId; level: number; binaryDust: number; graces: number; updatedAt: string } | null;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -133,14 +138,26 @@ export const api = {
 
   profile: () => request<Player>('/api/profile'),
 
-  character: () =>
-    request<{ character: { classId: ClassId; appearance: Appearance } | null }>('/api/character'),
+  /** With no slot, the save in play. */
+  character: (slot?: number) =>
+    request<{ character: { classId: ClassId; appearance: Appearance } | null }>(
+      slot === undefined ? '/api/character' : `/api/character?slot=${slot}`,
+    ),
 
-  saveCharacter: (classId: ClassId, appearance: Appearance) =>
+  saveCharacter: (classId: ClassId, appearance: Appearance, slot?: number) =>
     request<{ classId: ClassId; appearance: Appearance }>('/api/character', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...sessionHeaders() },
-      body: JSON.stringify({ classId, appearance }),
+      body: JSON.stringify({ classId, appearance, slot }),
+    }),
+
+  saves: () => request<{ active: number; slots: SaveSlot[] }>('/api/saves'),
+
+  selectSave: (slot: number) =>
+    request<{ active: number }>('/api/saves/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...sessionHeaders() },
+      body: JSON.stringify({ slot }),
     }),
 
   player: (username: string) => request<Player>(`/api/players/${encodeURIComponent(username)}`),

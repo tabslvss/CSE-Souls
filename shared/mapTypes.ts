@@ -33,10 +33,13 @@ export interface MapChest {
   model?: string;
 }
 
-export interface MapBonfire {
+/** A Binary Grace: where players rest, raise stats and travel from. */
+export interface MapGrace {
   id: number;
   x: number;
   z: number;
+  /** Shown in menus and on the map. */
+  name: string;
 }
 
 export interface MapZone {
@@ -71,7 +74,7 @@ export interface MapData {
   colliders: MapCollider[];
   camps: MapCamp[];
   chests: MapChest[];
-  bonfires: MapBonfire[];
+  graces: MapGrace[];
   zones: MapZone[];
   /** Polyline of the road, for the ground painter: x, z, repeating. */
   road: number[];

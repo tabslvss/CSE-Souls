@@ -77,6 +77,8 @@ export interface SimState {
   drinkTime: number;
   /** Above 0 while in the air. Keeps counting through a stagger or a death, so the body still comes down. */
   jumpTime: number;
+  /** The id of the Binary Grace this player is sitting at, or 0. Only the server sits a player down. */
+  resting: number;
 }
 
 export interface Derived {
@@ -136,6 +138,7 @@ export function createState(x: number, z: number, derived: Derived): SimState {
     potions: STARTING_POTIONS,
     drinkTime: 0,
     jumpTime: 0,
+    resting: 0,
   };
 }
 
@@ -172,6 +175,15 @@ export function stepPlayer(state: SimState, input: SimInput, derived: Derived, d
   const mx = input.mx * scale;
   const mz = input.mz * scale;
   const wantsToMove = length > 0.01;
+
+  // Sitting holds still until the player does anything at all, which stands them up in the same step.
+  if (state.resting > 0) {
+    if (!wantsToMove && !input.dodge && !input.attack && !input.potion && !input.jump) {
+      state.moving = 0;
+      return;
+    }
+    state.resting = 0;
+  }
 
   if (drinkBefore > DRINK_HEAL_TIME && state.drinkTime <= DRINK_HEAL_TIME) {
     state.health = Math.min(derived.maxHealth, state.health + derived.maxHealth * POTION_HEAL_SHARE);
@@ -257,13 +269,14 @@ export function jumpHeight(jumpTime: number): number {
   return JUMP_HEIGHT * 4 * through * (1 - through);
 }
 
-export type AnimationId = 'idle' | 'walk' | 'run' | 'dodge' | 'attack' | 'hit' | 'death' | 'drink' | 'jump';
+export type AnimationId = 'idle' | 'walk' | 'run' | 'dodge' | 'attack' | 'hit' | 'death' | 'drink' | 'jump' | 'rest';
 
 export function animationFor(
-  state: Pick<SimState, 'dodgeTime' | 'attackTime' | 'moving' | 'deadTime' | 'staggerTime' | 'drinkTime' | 'jumpTime'>,
+  state: Pick<SimState, 'dodgeTime' | 'attackTime' | 'moving' | 'deadTime' | 'staggerTime' | 'drinkTime' | 'jumpTime' | 'resting'>,
 ): AnimationId {
   if (state.deadTime > 0) return 'death';
   if (state.staggerTime > 0) return 'hit';
+  if (state.resting > 0) return 'rest';
   if (state.dodgeTime > 0) return 'dodge';
   if (state.attackTime > 0) return 'attack';
   if (state.drinkTime > 0) return 'drink';

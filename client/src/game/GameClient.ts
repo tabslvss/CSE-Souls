@@ -1,9 +1,11 @@
 import * as THREE from 'three';
-import { findClass } from '../../../shared/classes';
+import { findClass, STAT_INFO, type StatKey } from '../../../shared/classes';
 import { collide } from '../../../shared/collision';
 import { INTERACT_RANGE, WEAPON_STYLES, weaponFor, type WeaponStats, type WeaponStyle } from '../../../shared/combat';
+import { findGrace, GRACE_REST_RANGE } from '../../../shared/graces';
 import { MAP } from '../../../shared/mapData';
-import type { CreatureSnapshot, GameEvent, PlayerInfo } from '../../../shared/protocol';
+import type { MapGrace } from '../../../shared/mapTypes';
+import type { CreatureSnapshot, GameEvent, PlayerInfo, RefusalReason } from '../../../shared/protocol';
 import { DRINK_HEAL_TIME, JUMP_SECONDS, animationFor, jumpHeight, type AnimationId } from '../../../shared/sim';
 import { sound, type FootSurface } from '../sound';
 import { ARMORY } from './armory';
@@ -13,7 +15,9 @@ import { CameraFx } from './fx/camera';
 import { GameFx } from './fx/effects';
 import { FootTrail, landHit, takeHit, type FeelParts, type MoveKind } from './fx/feel';
 import { GamepadInput, type MenuNav, type PadAction } from './gamepad';
+import { GraceField } from './graces';
 import { LockOn } from './lockOn';
+import { meteorBlast } from './fx/feel';
 import { GameConnection, type ConnectionStatus, type FrameInput, type NetPlayer } from './net';
 import { PsxRenderer } from './psxRenderer';
 import { createWorld } from './world';
@@ -56,6 +60,10 @@ const CAMERA_EASE_OUT = 3.5;
 /** Seconds from the blow's start of the part of a swing that draws a trail, around the hit moment. */
 const TRAIL_LEAD: Record<WeaponStyle, number> = { heavy: 0.2, blade: 0.13, thrust: 0.12, magic: 0.14, arrow: 0 };
 const TRAIL_FOLLOW = 0.09;
+/** How much light a spell gathers and lets go of. The meteor's cast has to look like it costs something. */
+const SPELL_POWER_METEOR = 2.4;
+const SPELL_POWER_BOLT = 1;
+const SPELL_POWER_CRESCENT = 0.8;
 /** The heavy sound is a long rush of air that should peak as the weapon lands. */
 const WIND_LEAD_SECONDS = 0.8;
 const WIND_POWER: Partial<Record<string, number>> = { 'War hammer': 1.4, 'Double axe': 1.2, Zweihander: 1.2, 'Mace and shield': 0.7 };
@@ -74,7 +82,39 @@ const LANTERN_POWER = 9;
 const LANTERN_RANGE = 18;
 const LANTERN_HEIGHT = 3;
 
-const ACHIEVEMENT_NAMES: Record<string, string> = { first_blood: 'First Blood', beast_hunter: 'Beast Hunter' };
+/** The view while sitting: from behind and to one side, low, with the grace in the middle of the picture. */
+const REST_CAMERA_SIDE = 0.6;
+const REST_CAMERA_PITCH = 0.2;
+const REST_CAMERA_DISTANCE = 4.4;
+const REST_CAMERA_PIVOT = 0.95;
+const REST_CAMERA_RATE = 2.2;
+const SITTING_PLATE_DROP = 0.75;
+
+const ACHIEVEMENT_NAMES: Record<string, string> = {
+  first_blood: 'First Blood',
+  beast_hunter: 'Beast Hunter',
+  first_grace: 'Warm Light',
+  first_upgrade: 'Stronger Code',
+};
+
+/** The server only ever sends one of these fixed words, so no text from the network reaches the screen here. */
+const REFUSAL_TEXT: Record<RefusalReason, string> = {
+  enemies_near: 'Enemies are too close to rest there.',
+  interrupted: 'Something disturbed your rest.',
+  grace_full: 'Every seat at that Binary Grace is taken.',
+  not_resting: 'You need to be resting at a Binary Grace to do that.',
+  too_far: 'You are too far from the Binary Grace.',
+  no_dust: 'You do not have enough Binary Dust.',
+  stat_maxed: 'That stat is already at its highest.',
+  not_discovered: 'You have not found that Binary Grace yet.',
+  try_again: 'That did not go through. Please try again.',
+};
+
+/** What the world map needs to know, read fresh for every picture it draws. */
+export interface MapView {
+  me: { x: number; z: number; yaw: number } | null;
+  others: Array<{ x: number; z: number; name: string }>;
+}
 
 export interface HudState {
   health: number;
@@ -91,6 +131,12 @@ export interface HudState {
   deadSeconds: number;
   /** Shown near the middle of the screen, for example near a chest. */
   prompt: string | null;
+  /** You, as the server last described you. */
+  me: PlayerInfo | null;
+  /** Your Binary Dust by the server's count, which is what spending goes by. */
+  dust: number;
+  /** Binary Graces lit on this save. */
+  graces: number[];
 }
 
 export interface GameCallbacks {
@@ -103,8 +149,12 @@ export interface GameCallbacks {
   onBanner: (title: string, detail: string) => void;
   /** A short message, like a chest's reward. */
   onNotice: (text: string) => void;
-  /** A controller moving around the pause menu. */
+  /** A controller moving around a menu, or Esc while one of the game's own menus is open. */
   onMenu: (nav: MenuNav) => void;
+  /** The server sat you down at this grace, moved you to another, or got you up (0). */
+  onRest: (grace: number) => void;
+  /** The map button, wherever you are. */
+  onMapKey: () => void;
 }
 
 interface Avatar {
@@ -112,6 +162,9 @@ interface Avatar {
   info: PlayerInfo;
   model: CharacterModel | null;
   plate: HTMLDivElement;
+  plateDetail: HTMLElement;
+  /** Raised stats can load a new model, and only the newest one may end up on screen. */
+  modelLoad: number;
   weapon: WeaponStats;
   isBow: boolean;
   trail: FootTrail;
@@ -170,8 +223,17 @@ export class GameClient {
   private readonly parts: FeelParts;
   private readonly creatures: CreatureField;
   private readonly openedChests = new Set<number>();
+  private readonly litGraces = new Set<number>();
+  private readonly graces: GraceField;
+  /** The grace the server says you're sitting at, which also drives the camera. */
+  private restGrace: MapGrace | null = null;
+  /** A menu of the game's own is up. The pause menu isn't one of these. */
+  private overlayOpen = false;
+  private resumeWithPad = false;
   private readonly lantern = new THREE.PointLight(LANTERN_COLOR, LANTERN_POWER, LANTERN_RANGE, 1.5);
   private readonly lockOn: LockOn;
+  /** The lock-on the server was last told about, so that it's only told when it changes. */
+  private sentAim = 0;
   private readonly pad: GamepadInput;
   private readonly lookPoint = new THREE.Vector3();
   private lookRaise = 0;
@@ -206,7 +268,9 @@ export class GameClient {
     this.fx = new GameFx(this.world.scene, this.camera);
     this.parts = { fx: this.fx, camera: this.cameraFx, vhs: this.psx.vhs };
     this.creatures = new CreatureField(this.world.scene, this.fx, this.camera, canvas, plateLayer);
+    this.fx.arcane.findTarget = (id, out) => this.creatures.copyLivingChest(id, out);
     this.world.scene.add(this.lantern);
+    this.graces = new GraceField(this.world.scene, this.world.graces);
     this.lockOn = new LockOn(this.world.scene, this.camera, this.creatures);
     this.pad = new GamepadInput({
       onAction: (action) => this.onPadAction(action),
@@ -222,7 +286,7 @@ export class GameClient {
         if (status !== 'open') this.lockOn.release();
         callbacks.onStatus(status);
       },
-      onWelcome: (myId, players, dust, chests) => this.onWelcome(myId, players, dust, chests),
+      onWelcome: (myId, players, dust, chests, graces) => this.onWelcome(myId, players, dust, chests, graces),
       onJoin: (player) => this.addAvatar(player),
       onLeave: (id) => this.removeAvatar(id),
       onCreatures: (list: CreatureSnapshot[]) => this.creatures.applySnapshot(list),
@@ -230,6 +294,11 @@ export class GameClient {
       onSelf: (dust) => this.onSelf(dust),
       onChest: (id, dust, potion) => this.onChest(id, dust, potion),
       onUnlock: (achievement) => this.onUnlock(achievement),
+      onGrace: (id) => this.onGrace(id),
+      onResting: (grace) => this.onResting(grace),
+      onInfo: (player) => this.onInfo(player),
+      onUpgraded: (stat) => this.onUpgraded(stat),
+      onRefused: (reason) => this.onRefused(reason),
     });
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -274,6 +343,46 @@ export class GameClient {
     this.callbacks.onPointerLock(false);
   }
 
+  /** Hands the mouse and controller over to a menu. The world goes on running behind it. */
+  openOverlay(): void {
+    if (this.overlayOpen) return;
+    this.overlayOpen = true;
+    this.resumeWithPad = this.padPlaying;
+    this.keys.clear();
+    this.pause();
+  }
+
+  /** resume goes straight back to playing. Browsers can refuse the pointer lock, which just leaves the pause menu up. */
+  closeOverlay(resume: boolean): void {
+    if (!this.overlayOpen) return;
+    this.overlayOpen = false;
+    if (!resume) return;
+    if (this.resumeWithPad) this.playWithController();
+    else this.requestPointerLock();
+  }
+
+  /* What the menus can ask for. The server checks every one of these again. */
+
+  standUp(): void {
+    this.connection.send({ t: 'stand' });
+  }
+
+  upgradeStat(stat: StatKey): void {
+    this.connection.send({ t: 'upgrade', stat });
+  }
+
+  travelTo(grace: number): void {
+    this.connection.send({ t: 'travel', grace });
+  }
+
+  mapView(): MapView {
+    const others: MapView['others'] = [];
+    for (const avatar of this.avatars.values()) {
+      if (avatar.id !== this.connection.myId) others.push({ x: avatar.x, z: avatar.z, name: avatar.info.username });
+    }
+    return { me: this.connection.localPosition(), others };
+  }
+
   get vhsOn(): boolean {
     return this.psx.vhs.enabled;
   }
@@ -305,6 +414,15 @@ export class GameClient {
   private readonly onKeyDown = (event: KeyboardEvent) => {
     if (event.repeat) return;
     this.keys.add(event.code);
+    // Both of these also work with the game paused or a menu open.
+    if (event.code === 'KeyM' && this.connection.state) {
+      this.callbacks.onMapKey();
+      return;
+    }
+    if (event.code === 'Escape' && this.overlayOpen) {
+      this.callbacks.onMenu('back');
+      return;
+    }
     if (!this.playing) return;
     // With pointer lock, the browser takes Esc for itself and pauses that way.
     if (event.code === 'Escape') this.pause();
@@ -347,6 +465,7 @@ export class GameClient {
   private readonly onMouseDown = (event: MouseEvent) => {
     // Or the middle button starts the browser's autoscroll.
     if (event.button === 1) event.preventDefault();
+    if (this.overlayOpen) return;
     if (document.pointerLockElement !== this.canvas) {
       this.requestPointerLock();
     } else if (event.button === 0) {
@@ -373,6 +492,7 @@ export class GameClient {
     else if (action === 'jump') this.jumpQueued = true;
     else if (action === 'potion') this.potionQueued = true;
     else if (action === 'interact') this.interactQueued = true;
+    else if (action === 'map') this.callbacks.onMapKey();
     else this.pause();
   }
 
@@ -387,7 +507,7 @@ export class GameClient {
     this.callbacks.onPointerLock(this.playing);
   };
 
-  private onWelcome(myId: number, players: PlayerInfo[], dust: number, chests: number[]): void {
+  private onWelcome(myId: number, players: PlayerInfo[], dust: number, chests: number[], graces: number[]): void {
     // Ids restart when the server does, so an old id may now belong to someone else entirely.
     this.lockOn.release();
     this.recentering = false;
@@ -409,6 +529,12 @@ export class GameClient {
     for (const id of chests) {
       this.openedChests.add(id);
       this.world.setChestOpen(id, true, false);
+    }
+    this.litGraces.clear();
+    for (const grace of this.world.graces) this.graces.setLit(grace.id, false, false);
+    for (const id of graces) {
+      this.litGraces.add(id);
+      this.graces.setLit(id, true, false);
     }
   }
 
@@ -439,6 +565,8 @@ export class GameClient {
       info: player,
       model: null,
       plate,
+      plateDetail: detail,
+      modelLoad: 0,
       weapon,
       isBow: !!setup.bow,
       trail: new FootTrail(this.parts, player.id === this.connection.myId),
@@ -465,12 +593,22 @@ export class GameClient {
   }
 
   private loadAvatarModel(player: PlayerInfo, avatar: Avatar): void {
+    avatar.modelLoad += 1;
+    const load = avatar.modelLoad;
     // The real stats, so the swing lasts exactly as long as the server's attack timer.
     createCharacter(player.classId, player.appearance, player.stats).then(
       (model) => {
-        if (this.disposed || this.avatars.get(player.id) !== avatar) {
+        if (this.disposed || this.avatars.get(player.id) !== avatar || avatar.modelLoad !== load) {
           model.dispose();
           return;
+        }
+        const old = avatar.model;
+        if (old) {
+          this.fx.undissolve(old.root);
+          this.world.scene.remove(old.root);
+          old.dispose();
+          // They belonged to the old model.
+          avatar.flashMaterials = null;
         }
         avatar.model = model;
         this.world.scene.add(model.root);
@@ -478,7 +616,9 @@ export class GameClient {
       () => {
         // A failed download shouldn't leave this player invisible, so it tries again.
         window.setTimeout(() => {
-          if (!this.disposed && this.avatars.get(player.id) === avatar) this.loadAvatarModel(player, avatar);
+          if (!this.disposed && this.avatars.get(player.id) === avatar && avatar.modelLoad === load) {
+            this.loadAvatarModel(player, avatar);
+          }
         }, MODEL_RETRY_MS);
       },
     );
@@ -557,7 +697,13 @@ export class GameClient {
   private steerCamera(seconds: number, playerX: number, playerZ: number): void {
     const { look } = this.pad;
     const aim = this.lockOn.aim;
-    if (aim) {
+    if (this.restGrace) {
+      const blend = 1 - Math.exp(-seconds * REST_CAMERA_RATE);
+      const towardGrace = Math.atan2(this.restGrace.x - playerX, this.restGrace.z - playerZ);
+      this.yaw = wrapAngle(this.yaw + wrapAngle(towardGrace + REST_CAMERA_SIDE - this.yaw) * blend);
+      this.pitch += (REST_CAMERA_PITCH - this.pitch) * blend;
+      this.recentering = false;
+    } else if (aim) {
       this.recentering = false;
       const dx = aim.x - playerX;
       const dz = aim.z - playerZ;
@@ -586,7 +732,7 @@ export class GameClient {
     const horizontal = Math.cos(this.pitch);
     const directionX = -Math.sin(this.yaw);
     const directionZ = -Math.cos(this.yaw);
-    const wanted = this.distance;
+    const wanted = this.restGrace ? REST_CAMERA_DISTANCE : this.distance;
     let clear = wanted;
     const probe = { x: 0, z: 0 };
     for (let along = CAMERA_PROBE_STEP; along < wanted + CAMERA_PROBE_STEP; along += CAMERA_PROBE_STEP) {
@@ -658,8 +804,9 @@ export class GameClient {
     this.driveHeal(avatar, drinkTime);
 
     // Nameplates are real page text, so they stay sharp above the low-res picture.
-    this.projected.set(x, NAMEPLATE_HEIGHT + height, z).project(this.camera);
-    const distance = this.camera.position.distanceTo(new THREE.Vector3(x, NAMEPLATE_HEIGHT + height, z));
+    const plateHeight = NAMEPLATE_HEIGHT + height - (animation === 'rest' ? SITTING_PLATE_DROP : 0);
+    this.projected.set(x, plateHeight, z).project(this.camera);
+    const distance = this.camera.position.distanceTo(new THREE.Vector3(x, plateHeight, z));
     const visible = this.projected.z < 1 && distance < NAMEPLATE_MAX_DISTANCE;
     avatar.plate.style.display = visible ? 'flex' : 'none';
     if (visible) {
@@ -702,9 +849,10 @@ export class GameClient {
     const start = weapon.hitAt - TRAIL_LEAD[style] / seconds;
     const end = weapon.hitAt + TRAIL_FOLLOW / seconds;
 
+    const spellPower = weapon.meteor ? SPELL_POWER_METEOR : weapon.crescent ? SPELL_POWER_CRESCENT : SPELL_POWER_BOLT;
     if (style === 'magic' && phase < weapon.hitAt) {
       model.weaponTip(this.tip);
-      this.fx.castMagic(this.tip, style);
+      this.fx.castMagic(this.tip, style, spellPower);
     }
     if (!avatar.swingStarted && phase >= start) {
       avatar.swingStarted = true;
@@ -725,7 +873,12 @@ export class GameClient {
     }
     if (!avatar.impactDone && phase >= weapon.hitAt) {
       avatar.impactDone = true;
-      if (style === 'arrow' || style === 'magic') sound.swing(style, { x, z });
+      if (style === 'arrow') sound.swing(style, { x, z });
+      if (style === 'magic') {
+        sound.spellCast(weapon.meteor ? 'meteor' : weapon.crescent ? 'crescent' : 'bolt', { x, z });
+        model.weaponTip(this.tip);
+        this.fx.arcane.release(this.tip, spellPower);
+      }
       if (style === 'heavy') {
         const power = WIND_POWER[weapon.label] ?? 1;
         this.tip.set(x + Math.sin(avatar.yaw) * 1.4, 0, z + Math.cos(avatar.yaw) * 1.4);
@@ -835,12 +988,36 @@ export class GameClient {
         break;
       }
       case 'shot': {
-        const style = WEAPON_STYLES[event.style] ?? 'arrow';
-        this.fx.spawnProjectile(event.id, { x: event.x, y: EFFECT_HEIGHT, z: event.z }, event.yaw, event.speed, event.range, style);
+        if (event.form === 'homing') {
+          const shooter = this.avatars.get(event.by)?.model;
+          // It should leave the wand, though it flies the server's path from the body.
+          if (shooter) shooter.weaponTip(this.tip);
+          else this.tip.set(event.x, EFFECT_HEIGHT, event.z);
+          this.fx.arcane.bolt(event.id, event.x, event.z, this.tip, event.yaw, event.speed, event.range, event.target ?? 0, event.turn ?? 0);
+        } else if (event.form === 'crescent') {
+          this.fx.arcane.crescent(event.id, event.x, event.z, event.yaw, event.speed, event.range, event.width ?? 1);
+        } else {
+          const style = WEAPON_STYLES[event.style] ?? 'arrow';
+          this.fx.spawnProjectile(event.id, { x: event.x, y: EFFECT_HEIGHT, z: event.z }, event.yaw, event.speed, event.range, style);
+        }
+        break;
+      }
+      case 'meteor': {
+        const caster = this.avatars.get(event.by);
+        this.fx.arcane.meteorCast(event.id, event.x, event.z, event.delay, event.radius, caster?.x ?? event.x, caster?.z ?? event.z);
+        sound.meteorFalling({ x: event.x, z: event.z }, event.delay);
+        if (event.by === myId) this.rumble(0.15, 0.3, 140);
+        break;
+      }
+      case 'meteorEnd': {
+        const me = this.connection.state;
+        const distance = me ? Math.hypot(me.x - event.x, me.z - event.z) : Infinity;
+        meteorBlast(this.parts, event.id, event.x, event.z, event.radius, distance, event.by === myId);
+        if (distance < event.radius * 4) this.rumble(1, 0.8, 380);
         break;
       }
       case 'shotEnd':
-        this.fx.endProjectile(event.id, { x: event.x, y: EFFECT_HEIGHT, z: event.z }, event.hit === 1, event.splash);
+        this.fx.endProjectile(event.id, { x: event.x, y: EFFECT_HEIGHT, z: event.z }, event.hit === 1, event.style);
         // On a hit, the hit event has its own sound. This is the bolt bursting against nothing.
         if (event.hit === 0 && WEAPON_STYLES[event.style] === 'magic') {
           sound.playGame('magic-impact', { x: event.x, z: event.z, volume: 0.6 });
@@ -912,6 +1089,11 @@ export class GameClient {
 
   private onSelf(dust: number): void {
     this.serverDust = dust;
+    // Spending shows at once. Only dust flying toward you waits for its flight to finish.
+    if (dust < this.shownDust) {
+      this.shownDust = dust;
+      this.callbacks.onBinaryDust(dust, false);
+    }
     // Dust whose flight was cut short, or that came from elsewhere, still has to show up.
     window.clearTimeout(this.dustSettleTimer);
     this.dustSettleTimer = window.setTimeout(() => {
@@ -942,11 +1124,69 @@ export class GameClient {
     this.callbacks.onNotice(name ? `Achievement earned: ${name}` : 'Achievement earned');
   }
 
-  /** The chest you're close enough to open, if any. The server checks this again for itself. */
-  private chestPrompt(x: number, z: number): string | null {
+  private onGrace(id: number): void {
+    this.litGraces.add(id);
+    this.graces.setLit(id, true, true);
+    const grace = findGrace(this.world.graces, id);
+    if (grace) {
+      this.fx.respawn({ x: grace.x, y: 0, z: grace.z });
+      this.callbacks.onNotice(`Binary Grace lit: ${grace.name}`);
+    }
+    sound.play('ignite');
+  }
+
+  private onResting(id: number): void {
+    const grace = id > 0 ? findGrace(this.world.graces, id) ?? null : null;
+    const moved = this.restGrace !== null && grace !== null && grace !== this.restGrace;
+    this.restGrace = grace;
+    const mine = this.connection.state;
+    if (grace && mine) {
+      // Standing up should start out from the way the character is sitting.
+      this.faceYaw = mine.yaw;
+      this.graces.flare(grace.id);
+      // Travelling is instant, so the camera goes along with no flight across the map.
+      if (moved) {
+        this.cameraTarget.set((mine.x + grace.x) / 2, REST_CAMERA_PIVOT, (mine.z + grace.z) / 2);
+        this.yaw = wrapAngle(Math.atan2(grace.x - mine.x, grace.z - mine.z) + REST_CAMERA_SIDE);
+      } else {
+        sound.play('ignite');
+      }
+    }
+    this.callbacks.onRest(grace ? grace.id : 0);
+  }
+
+  private onInfo(player: PlayerInfo): void {
+    const avatar = this.avatars.get(player.id);
+    if (!avatar) return;
+    const swingChanged = avatar.info.stats.speed !== player.stats.speed;
+    avatar.info = player;
+    avatar.plateDetail.textContent = `Level ${player.level} ${findClass(player.classId)?.name ?? ''}`;
+    // A model's swing is built for one Speed, and has to match the server's attack timer.
+    if (swingChanged) this.loadAvatarModel(player, avatar);
+  }
+
+  private onUpgraded(stat: StatKey): void {
+    sound.play('confirm');
+    const avatar = this.avatars.get(this.connection.myId);
+    if (avatar) {
+      this.fx.chestOpen(avatar.feet);
+      this.callbacks.onNotice(`${STAT_INFO[stat].label} raised to ${avatar.info.stats[stat]}`);
+    }
+  }
+
+  private onRefused(reason: RefusalReason): void {
+    sound.play('error');
+    this.callbacks.onNotice(REFUSAL_TEXT[reason]);
+  }
+
+  /** What E would do where you're standing. A chest comes first, the same as on the server, which checks it all again. */
+  private interactPrompt(x: number, z: number): string | null {
     for (const chest of MAP.chests) {
       if (this.openedChests.has(chest.id)) continue;
       if (Math.hypot(chest.x - x, chest.z - z) <= INTERACT_RANGE) return 'to open';
+    }
+    for (const grace of this.world.graces) {
+      if (Math.hypot(grace.x - x, grace.z - z) <= GRACE_REST_RANGE) return 'to rest';
     }
     return null;
   }
@@ -985,6 +1225,11 @@ export class GameClient {
     const mine = this.connection.state;
     if (!this.playing || !mine || mine.deadTime > 0) this.lockOn.release();
     else this.lockOn.update(frameSeconds, mine.x, mine.z);
+    const aimAt = this.lockOn.targetCreature;
+    if (aimAt !== this.sentAim) {
+      this.sentAim = aimAt;
+      this.connection.send({ t: 'aim', c: aimAt });
+    }
 
     this.connection.advance(frameSeconds, () => {
       const input = this.readInput(frameSeconds);
@@ -998,9 +1243,13 @@ export class GameClient {
 
     const local = this.connection.localPosition();
     if (local) {
+      // Sitting, the view drifts to look between you and the grace, and comes down to your height.
+      const rest = this.restGrace;
       this.cameraTarget.lerp(
-        new THREE.Vector3(local.x, CAMERA_PIVOT_HEIGHT, local.z),
-        1 - Math.exp(-frameSeconds * 14),
+        rest
+          ? new THREE.Vector3((local.x + rest.x) / 2, REST_CAMERA_PIVOT, (local.z + rest.z) / 2)
+          : new THREE.Vector3(local.x, CAMERA_PIVOT_HEIGHT, local.z),
+        1 - Math.exp(-frameSeconds * (rest ? REST_CAMERA_RATE : 14)),
       );
       this.steerCamera(frameSeconds, local.x, local.z);
     }
@@ -1030,6 +1279,7 @@ export class GameClient {
     this.lockOn.placeMarker();
 
     this.fx.update(fxSeconds);
+    this.graces.update(frameSeconds, local ? local.x : this.cameraTarget.x, local ? local.z : this.cameraTarget.z);
     sound.setListener(this.camera.position.x, this.camera.position.z, this.yaw);
     if (local) this.lantern.position.set(local.x, LANTERN_HEIGHT, local.z);
     if (local) this.world.update(local.x, local.z);
@@ -1052,7 +1302,10 @@ export class GameClient {
           ping: Math.round(pingMs),
           names: [...players.values()].map((player) => player.info.username),
           deadSeconds: state.deadTime,
-          prompt: state.deadTime > 0 ? null : this.chestPrompt(state.x, state.z),
+          prompt: state.deadTime > 0 || state.resting > 0 ? null : this.interactPrompt(state.x, state.z),
+          me: players.get(this.connection.myId)?.info ?? null,
+          dust: this.serverDust,
+          graces: [...this.litGraces],
         });
       }
     }
@@ -1073,6 +1326,7 @@ export class GameClient {
     cancelAnimationFrame(this.frameId);
     window.clearTimeout(this.dustSettleTimer);
     this.lockOn.dispose();
+    this.graces.dispose();
     this.pad.dispose();
     this.connection.dispose();
     this.resizeObserver.disconnect();

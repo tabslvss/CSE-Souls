@@ -59,9 +59,10 @@ const ATTACKS = [
 ];
 
 const FEATURES = [
-  ['Binary Dust', 'Kill enemies and animals to collect Binary Dust, then spend it to raise your stats.'],
+  ['Binary Dust', 'Kill enemies and animals to collect Binary Dust, then spend it to raise your stats at a Binary Grace.'],
+  ['Binary Graces', 'Golden lights around the map. Sit down at one to heal, raise your stats, travel to others you have found, or change saves.'],
   ['Better weapons', 'Every class starts with a basic weapon. Find and loot stronger versions as you explore.'],
-  ['Healing potions', 'You carry three. Refill them by resting at a bonfire.'],
+  ['Healing potions', 'You carry three. Refill them by resting at a Binary Grace.'],
   ['Day and night', 'Every player shares the same day and night cycle.'],
   ['Play together', 'Everyone online is in the same world, in real time.'],
 ];

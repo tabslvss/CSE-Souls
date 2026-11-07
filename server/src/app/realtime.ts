@@ -17,7 +17,7 @@ import { cookiesFrom, isAllowedOrigin } from '../shared/http.js';
 import { SESSION_COOKIE, verifySessionToken, type SessionClaims } from '../shared/jwt.js';
 import { log } from '../shared/logger.js';
 import { avatarUrl } from './avatars.js';
-import { parseInput, withLoadTestCreatures, World, type WorldPlayer } from './combat.js';
+import { parseAction, parseInput, withLoadTestCreatures, World, type WorldPlayer } from './combat.js';
 import { Mode } from './creatures.js';
 import { ProgressStore } from './progress.js';
 
@@ -59,16 +59,43 @@ const world = new World({
     if (seat?.player === player) send(seat.connection.socket, message);
   },
   credit(player, delta) {
-    progress.add(player.userId, delta);
+    progress.add(player.userId, player.slot, delta);
   },
   openChest(player, chest) {
-    return progress.openChest(player.userId, chest.id, chest.dust);
+    return progress.openChest(player.userId, player.slot, chest.id, chest.dust);
   },
   unlock(player, achievement) {
     return progress.unlock(player.userId, achievement);
   },
+  discoverGrace(player, grace) {
+    return progress.discoverGrace(player.userId, player.slot, grace.id).catch((err: unknown) => {
+      log('error', 'discover_grace_failed', { message: err instanceof Error ? err.message : String(err) });
+    });
+  },
+  saveRespawn(player, grace) {
+    return progress.saveRespawn(player.userId, player.slot, grace.id).catch((err: unknown) => {
+      log('error', 'save_respawn_failed', { message: err instanceof Error ? err.message : String(err) });
+    });
+  },
+  upgradeStat(player, stat, cost) {
+    return progress.upgradeStat(player.userId, player.slot, stat, cost, player.info.level);
+  },
   // Compose never sets this. Only a throwaway stack for server/loadtest.cjs does.
 }, withLoadTestCreatures(MAP, Number(process.env.LOAD_TEST_CREATURES ?? 0)));
+
+/**
+ * Whether this account's save can change right now. Someone in the world has to be resting, so that
+ * switching can't be used as a way out of a fight. Someone not in the world can always choose.
+ */
+export function canSwitchSave(userId: string): boolean {
+  const seat = seats.get(userId);
+  return !seat || seat.player.state.resting > 0;
+}
+
+/** The save this account is playing right now, if it's in the world. */
+export function seatedSlot(userId: string): number | null {
+  return seats.get(userId)?.player.slot ?? null;
+}
 
 /** How many accounts are currently in the world. */
 export function onlineCount(): number {
@@ -103,7 +130,7 @@ function takeSeat(userId: string): void {
 
 async function enterWorld(connection: Connection): Promise<void> {
   const { sub: userId, username } = connection.claims;
-  // One character per account: a new tab takes over from the old one. That happens before reading
+  // One seat per account: a new tab takes over from the old one. That happens before reading
   // totals, so nothing the old one earns can fall in the gap and be missing from the new one.
   takeSeat(userId);
   await progress.flushUser(userId);
@@ -122,9 +149,11 @@ async function enterWorld(connection: Connection): Promise<void> {
   takeSeat(userId);
 
   // Anything that failed to save is still waiting in memory, and it still belongs to this player.
-  const unsaved = progress.unsaved(userId);
+  const unsaved = progress.unsaved(userId, loaded.slot);
+  const unsavedAccount = progress.unsavedAccount(userId);
   const player = world.addPlayer({
     userId,
+    slot: loaded.slot,
     info: {
       id: 0,
       // Identity only ever comes from the verified JWT.
@@ -136,9 +165,11 @@ async function enterWorld(connection: Connection): Promise<void> {
       stats: loaded.stats,
     },
     dust: loaded.dust + (unsaved?.dust ?? 0),
-    enemies: loaded.enemies + (unsaved?.enemies ?? 0),
-    animals: loaded.animals + (unsaved?.animals ?? 0),
+    enemies: loaded.enemies + unsavedAccount.enemies,
+    animals: loaded.animals + unsavedAccount.animals,
     chests: loaded.chests,
+    graces: loaded.graces,
+    respawnGrace: loaded.respawnGrace,
     achievements: loaded.achievements,
   });
   const seat: Seat = { connection, player };
@@ -152,6 +183,7 @@ async function enterWorld(connection: Connection): Promise<void> {
     snapshot: world.players.map((item) => packSnapshot(item.id, item.state)),
     binaryDust: player.dust,
     chests: [...player.chests],
+    graces: [...player.graces],
     mapVersion: MAP.version,
   });
   send(connection.socket, { t: 'self', dust: player.dust, kills: player.enemies + player.animals });
@@ -313,8 +345,14 @@ export function attachRealtime(server: Server, publicKey: string): void {
         if (overFloodLimit()) return;
         const seat = seats.get(claims.sub);
         if (isBinary || seat?.connection !== connection) return;
-        const input = parseInput(data.toString());
-        if (input) world.queueInput(seat.player, input);
+        const text = data.toString();
+        const input = parseInput(text);
+        if (input) {
+          world.queueInput(seat.player, input);
+          return;
+        }
+        const action = parseAction(text);
+        if (action) world.handleAction(seat.player, action);
       });
       ws.on('close', () => {
         clearTimeout(expiryTimer);

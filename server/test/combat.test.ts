@@ -94,7 +94,8 @@ async function profile(client: Client): Promise<{ binaryDust: number; xp: number
     enemies: body.record.enemiesKilled,
     animals: body.record.animalsHunted,
     deaths: body.record.deaths,
-    earned: body.achievements.filter((item) => item.unlockedAt).map((item) => item.id),
+    // Spawning beside a grace lights it, whatever else a test does.
+    earned: body.achievements.filter((item) => item.unlockedAt && item.id !== 'first_grace').map((item) => item.id),
   };
 }
 
@@ -296,7 +297,12 @@ describe('combat by real play', () => {
 
     const hits = player.events.filter((event) => event.k === 'hit' || event.k === 'dust');
     assert.deepEqual(hits, [], 'nothing near the spawn was in reach of that swing');
-    assert.ok(!player.messages.some((message) => message.t === 'chest' || message.t === 'unlock'));
+    // Walking up to the grace at spawn really does earn its achievement. Nothing else may.
+    assert.ok(
+      !player.messages.some(
+        (message) => message.t === 'chest' || (message.t === 'unlock' && message.achievement !== 'first_grace'),
+      ),
+    );
     assert.deepEqual(await profile(client), before);
     assert.equal(player.me[12], deriveStats(player.welcome.players.find((item) => item.id === player.welcome.you)!.stats).maxHealth, 'health is unchanged');
     assert.equal(player.closed, false, 'and the server just ignores them');
@@ -473,8 +479,8 @@ describe('combat by real play', () => {
     await until('coming back', () => player.events.some((event) => event.k === 'respawn' && event.v === you), 8000);
     assert.equal(player.me[12], maxHealth, 'full health');
     assert.ok(player.me[18] >= 3, 'with potions');
-    const nearestBonfire = Math.min(...MAP.bonfires.map((item) => Math.hypot(item.x - player.me[1], item.z - player.me[2])));
-    assert.ok(nearestBonfire < 6, `at a bonfire, ${nearestBonfire} away`);
+    const nearestGrace = Math.min(...MAP.graces.map((item) => Math.hypot(item.x - player.me[1], item.z - player.me[2])));
+    assert.ok(nearestGrace < 6, `at a Binary Grace, ${nearestGrace} away`);
 
     const saved = await until('the death to be saved', async () => {
       const current = await profile(client);

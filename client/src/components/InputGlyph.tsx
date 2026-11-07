@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 import { getInputDevice, subscribeInputDevice, type InputDevice } from '../game/inputDevice';
 
 export type InputAction =
-  | 'move' | 'look' | 'run' | 'jump' | 'roll' | 'attack' | 'potion' | 'interact' | 'lock' | 'zoom' | 'pause' | 'confirm';
+  | 'move' | 'look' | 'run' | 'jump' | 'roll' | 'attack' | 'potion' | 'interact' | 'lock' | 'zoom' | 'map' | 'pause' | 'confirm';
 
 interface Glyph {
   file: string;
@@ -62,6 +62,11 @@ const GLYPHS: Record<InputAction, Record<InputDevice, Glyph[]>> = {
     keyboard: [glyph('mouse_scroll_vertical', 'Scroll wheel')],
     playstation: [],
     xbox: [],
+  },
+  map: {
+    keyboard: [glyph('keyboard_m', 'M')],
+    playstation: [glyph('playstation5_button_create', 'Create')],
+    xbox: [glyph('xbox_button_view', 'View')],
   },
   pause: {
     keyboard: [glyph('keyboard_escape', 'Esc')],

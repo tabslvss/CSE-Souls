@@ -291,6 +291,65 @@ const CAST_PEAK = 0.6;
 const CAST_LIFT = 0.75;
 // How much each outer strip trails behind the lift, so that the edge of the leaf arrives last.
 const CAST_TRAIL = 0.24;
+// The leaf starts to stir as power gathers, well before the release, by this share of the full lift.
+const GATHER_FROM = 0.05;
+const GATHER_LIFT = 0.45;
+const GLOW_GONE_FROM = 0.7;
+const GLOW_PAGES = 1.1;
+
+// One additive plane per book, sharing all of this, since the look only changes by how big it is.
+let glowGeometry: THREE.PlaneGeometry | null = null;
+let glowMaterial: THREE.MeshBasicMaterial | null = null;
+
+function makeGlow(): THREE.Mesh {
+  if (!glowGeometry || !glowMaterial) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 64;
+    const ctx = canvas.getContext('2d')!;
+    const fall = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+    fall.addColorStop(0, 'rgba(255,240,200,1)');
+    fall.addColorStop(0.3, 'rgba(255,190,90,0.65)');
+    fall.addColorStop(0.65, 'rgba(70,130,255,0.32)');
+    fall.addColorStop(1, 'rgba(40,80,255,0)');
+    ctx.fillStyle = fall;
+    ctx.fillRect(0, 0, 64, 64);
+    glowGeometry = new THREE.PlaneGeometry(WIDTH * 1.9, WIDTH * 1.9);
+    glowMaterial = new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(canvas),
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
+  }
+  const mesh = new THREE.Mesh(glowGeometry, glowMaterial);
+  mesh.position.z = 0.05;
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  return mesh;
+}
+
+interface BookGlow {
+  mesh: THREE.Mesh;
+  /** The book's own materials and how brightly each normally glows. Read late, as the character replaces them when it picks the book up. */
+  pages: { material: THREE.MeshLambertMaterial; base: number }[];
+}
+
+function bookGlow(book: THREE.Object3D): BookGlow {
+  const existing = book.userData.glow as BookGlow | undefined;
+  if (existing) return existing;
+  const pages: BookGlow['pages'] = [];
+  book.traverse((object) => {
+    const material = (object as THREE.Mesh).material as THREE.MeshLambertMaterial | undefined;
+    if (material?.emissive && !pages.some((page) => page.material === material)) {
+      pages.push({ material, base: material.emissiveIntensity });
+    }
+  });
+  const glow: BookGlow = { mesh: makeGlow(), pages };
+  book.add(glow.mesh);
+  book.userData.glow = glow;
+  return glow;
+}
 
 /** The loose page stirs a little all the time, and lifts and falls back during a cast. */
 export function animateOpenBook(book: THREE.Object3D, clock: number, attackPhase: number): void {
@@ -302,6 +361,18 @@ export function animateOpenBook(book: THREE.Object3D, clock: number, attackPhase
   if (attackPhase >= CAST_START) {
     cast = attackPhase < CAST_PEAK ? THREE.MathUtils.smoothstep(attackPhase, CAST_START, CAST_PEAK) : 1 - THREE.MathUtils.smoothstep(attackPhase, CAST_PEAK, 1);
   }
-  joints[0].rotation.y = -(LEAF_REST[0] + stir + cast * CAST_LIFT);
-  for (let i = 1; i < joints.length; i += 1) joints[i].rotation.y = -(LEAF_REST[i] - cast * CAST_TRAIL);
+  const casting = attackPhase >= 0;
+  const gather = casting ? THREE.MathUtils.smoothstep(attackPhase, GATHER_FROM, CAST_START) : 0;
+  const lift = Math.max(cast, casting ? gather * GATHER_LIFT * (1 - THREE.MathUtils.smoothstep(attackPhase, CAST_PEAK, 1)) : 0);
+  joints[0].rotation.y = -(LEAF_REST[0] + stir + lift * CAST_LIFT);
+  for (let i = 1; i < joints.length; i += 1) joints[i].rotation.y = -(LEAF_REST[i] - lift * CAST_TRAIL);
+
+  // Costs nothing until the first cast, and stays out of the way between them.
+  const glowing = casting ? gather * (1 - THREE.MathUtils.smoothstep(attackPhase, GLOW_GONE_FROM, 1)) : 0;
+  const existing = book.userData.glow as BookGlow | undefined;
+  if (!existing && glowing <= 0) return;
+  const glow = existing ?? bookGlow(book);
+  glow.mesh.visible = glowing > 0.01;
+  glow.mesh.scale.setScalar(0.55 + glowing * (0.75 + Math.sin(clock * 19) * 0.08));
+  for (const page of glow.pages) page.material.emissiveIntensity = page.base + glowing * GLOW_PAGES;
 }

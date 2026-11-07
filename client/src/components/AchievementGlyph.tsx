@@ -9,6 +9,8 @@ const ICONS: Record<string, string> = {
   grave_walker: 'tombstone',
   boss_slayer: 'crowned-skull',
   unbroken: 'checked-shield',
+  first_grace: 'campfire',
+  first_upgrade: 'health-potion',
 };
 
 /** Medallion for an achievement: gold when earned, grey when locked. */

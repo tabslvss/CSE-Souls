@@ -58,7 +58,7 @@ const FLOOD_MS = 2000;
 const SPEED_MARGIN_INPUTS = 15;
 
 const PUBLIC_INFO_FIELDS = ['appearance', 'avatarUrl', 'classId', 'id', 'level', 'stats', 'username'];
-const SNAPSHOT_LENGTH = 20;
+const SNAPSHOT_LENGTH = 22;
 
 type Welcome = Extract<ServerMessage, { t: 'welcome' }>;
 type Snapshot = Extract<ServerMessage, { t: 's' }>;
@@ -1102,5 +1102,102 @@ describe('badly behaved clients', () => {
     assert.ok(entryFor(acked.p, second.you), 'the new player should be in snapshots');
     assert.equal(entryFor(acked.p, first.you), undefined, 'the old player should not be in snapshots');
     assert.equal(second.closeEvent, null, 'the new connection should stay open');
+  });
+});
+
+describe('saves and Binary Grace requests', () => {
+  afterEach(closeAllSockets);
+
+  async function select(client: Client, token: string | null, slot: unknown): Promise<Response> {
+    return client.fetch('/api/saves/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(token ? { 'X-XSRF-Token': token } : {}) },
+      body: JSON.stringify({ slot }),
+    });
+  }
+
+  interface Saves {
+    active: number;
+    slots: Array<{ slot: number; character: { classId: string; level: number; binaryDust: number; graces: number } | null }>;
+  }
+
+  it('keeps each save apart, and an account can only ever reach its own', async () => {
+    const { client } = await withCharacter('duelist');
+    const other = await withCharacter('ranger');
+    const token = await client.sessionXsrf();
+
+    for (const slot of [0, 4, -1, 1.5, '2', null, [2], {}, '1 OR 1=1']) {
+      assert.equal((await select(client, token, slot)).status, 400, `slot ${JSON.stringify(slot)}`);
+    }
+    assert.equal((await select(client, token, 2)).status, 404, 'there is nothing in that save yet');
+    assert.equal((await select(client, null, 1)).status, 403, 'no XSRF token');
+    assert.equal((await select(client, await other.client.sessionXsrf(), 1)).status, 403, "another account's token");
+
+    const made = await postCharacter(client, token, { classId: 'arcanist', appearance: {}, slot: 2 });
+    assert.equal(made.status, 200, await made.text());
+    for (const slot of [0, 4, '2', 1.5, null]) {
+      assert.equal((await postCharacter(client, token, { classId: 'arcanist', appearance: {}, slot })).status, 400, String(slot));
+    }
+
+    const saves = await getJson<Saves>(client, '/api/saves');
+    assert.equal(saves.active, 2, 'making a character plays it');
+    assert.deepEqual(saves.slots.map((item) => item.character?.classId ?? null), ['duelist', 'arcanist', null]);
+
+    const asked = (slot: string) => getJson<{ character: { classId: string } | null }>(client, `/api/character?slot=${slot}`);
+    assert.equal((await asked('1')).character?.classId, 'duelist');
+    assert.equal((await asked('2')).character?.classId, 'arcanist');
+    assert.equal((await asked('3')).character, null);
+    for (const slot of ['0', '9', 'abc', '1%20OR%201=1']) {
+      assert.equal((await client.fetch(`/api/character?slot=${slot}`)).status, 400, slot);
+    }
+
+    const theirs = await getJson<Saves>(other.client, '/api/saves');
+    assert.equal(theirs.active, 1, "someone else's account didn't move");
+    assert.deepEqual(theirs.slots.map((item) => item.character?.classId ?? null), ['ranger', null, null]);
+
+    // What the world loads follows the save chosen.
+    const inSecond = await enter({ client, username: (await getJson<Profile>(client, '/api/profile')).username });
+    assert.equal(inSecond.me.classId, 'arcanist');
+    assert.deepEqual(inSecond.welcome.graces.filter((id) => !MAP.graces.some((grace) => grace.id === id)), []);
+    await inSecond.shutdown();
+
+    const back = await select(client, token, 1);
+    assert.equal(back.status, 200);
+    assert.equal((await getJson<{ character: { classId: string } }>(client, '/api/character')).character.classId, 'duelist');
+  });
+
+  it('still lets a character that has spent nothing change class', async () => {
+    const { client } = await withCharacter('duelist');
+    const token = await client.sessionXsrf();
+    // At level 1 nothing has been spent, so the choice can still change.
+    assert.equal((await postCharacter(client, token, { classId: 'ranger', appearance: {} })).status, 200);
+    const saves = await getJson<Saves>(client, '/api/saves');
+    assert.equal(saves.slots[0].character?.classId, 'ranger');
+  });
+
+  it('answers requests from someone who isn’t resting with a fixed refusal, and survives bad ones', async () => {
+    const account = await withCharacter('duelist');
+    const socket = await enter(account);
+    const isRefusal = (item: ServerMessage): item is Extract<ServerMessage, { t: 'refused' }> => item.t === 'refused';
+
+    for (const text of [
+      '{"t":"upgrade","stat":"__proto__"}',
+      '{"t":"upgrade","stat":"health; DROP TABLE users"}',
+      '{"t":"travel","grace":"1"}',
+      '{"t":"travel","grace":-5}',
+      '{"t":"nonsense"}',
+    ]) {
+      socket.socket.send(text);
+    }
+    let since = socket.mark();
+    socket.socket.send(JSON.stringify({ t: 'travel', grace: MAP.graces[0].id }));
+    assert.equal((await socket.waitFor('refused travel', isRefusal, since)).reason, 'not_resting');
+    since = socket.mark();
+    socket.socket.send(JSON.stringify({ t: 'upgrade', stat: 'health' }));
+    assert.equal((await socket.waitFor('refused upgrade', isRefusal, since)).reason, 'not_resting');
+    assert.equal(socket.closeEvent, null, 'the sender stays connected');
+
+    const profile = await getJson<Profile>(account.client, '/api/profile');
+    assert.equal(profile.level, 1, 'nothing was bought');
   });
 });

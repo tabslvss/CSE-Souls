@@ -381,6 +381,8 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
     // The arms and head are posed by the rig, so the legs can go on standing or walking.
     drink: setup.idleClip,
     jump: 'Jump_Start',
+    // Only the head and a little sway come from this: the rig places the body and limbs on the ground.
+    rest: NEUTRAL_CLIP,
   };
   const oneShotSeconds: Partial<Record<AnimationId, number>> = {
     attack: attackSeconds,

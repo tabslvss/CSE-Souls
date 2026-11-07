@@ -109,7 +109,7 @@ function buildOverlay(): THREE.Group {
     group.add(mesh);
   };
   MAP.chests.forEach((chest) => marker(chest.x, chest.z, 0xffdd33));
-  MAP.bonfires.forEach((bonfire) => marker(bonfire.x, bonfire.z, 0xff7a1a));
+  MAP.graces.forEach((grace) => marker(grace.x, grace.z, 0xffc84a));
   MAP.camps.forEach((camp) => marker(camp.x, camp.z, 0x33aaff));
   return group;
 }

@@ -234,11 +234,15 @@ function ruinHouse(random, x, z, wide, deep, doorSide) {
 
 /* ---------- Fixed places: reserved first, so scatter stays out of them ---------- */
 
-const BONFIRES = [
-  { id: 1, x: 0, z: 175 },
-  { id: 2, x: 6, z: 70 },
-  { id: 3, x: 150, z: 10 },
-  { id: 5, x: 0, z: -108 },
+// Binary Graces, one for every area a player can walk to. Ids are saved per character, so they never change.
+const GRACES = [
+  { id: 1, x: 0, z: 175, name: "Pilgrim's Rest" },
+  { id: 6, x: 14, z: 132, name: 'Pale Meadow' },
+  { id: 2, x: 6, z: 70, name: 'Burnt Hamlet' },
+  { id: 7, x: 12, z: -32, name: 'Ash Flats' },
+  { id: 3, x: 150, z: 10, name: 'Forest Clearing' },
+  { id: 4, x: 176, z: -22, name: "Hunter's Hut" },
+  { id: 5, x: 0, z: -108, name: 'Citadel Gate' },
 ];
 const CHESTS = [
   { id: 1, x: -35, z: 45, yaw: 1.5708, dust: 40 },
@@ -251,7 +255,7 @@ const CAMPS = [
   { kind: 'deer', x: 44, z: 130, count: 4, radius: 14 },
   { kind: 'fox', x: -18, z: 147, count: 2, radius: 10 },
   { kind: 'fox', x: 72, z: 146, count: 2, radius: 10 },
-  // Cursed Forest: six wolf packs, kept away from the bonfire.
+  // Cursed Forest: six wolf packs, kept away from the graces.
   { kind: 'wolf', x: 92, z: -32, count: 3, radius: 10 },
   { kind: 'wolf', x: 128, z: 72, count: 3, radius: 10 },
   { kind: 'wolf', x: 200, z: 62, count: 3, radius: 10 },
@@ -272,17 +276,15 @@ const CAMPS = [
   { kind: 'bull', x: 168, z: 26, count: 1, radius: 5 },
   { kind: 'bull', x: 128, z: -14, count: 1, radius: 5 },
 ];
-BONFIRES.forEach((b) => reserve(b.x, b.z, 4));
+GRACES.forEach((g) => reserve(g.x, g.z, 4));
 CHESTS.forEach((c) => reserve(c.x, c.z, 3));
 CAMPS.forEach((c) => reserve(c.x, c.z, c.kind === 'bull' ? 5 : 3));
 reserve(SPAWN.x, SPAWN.z, SPAWN.radius + 1);
 reserve(150, 10, 18); // the clearing
 reserve(190, -40, 11); // the hut
 
-for (const b of BONFIRES) {
-  props('bonfire_unlit', b.x, b.z, b.id * 1.3, 1);
-  fire(b.x, 0.35, b.z, 1.5);
-}
+// The stones are the only solid part. The glow and the digits are drawn by client/src/game/graces.ts.
+for (const g of GRACES) props('bonfire_unlit', g.x, g.z, g.id * 1.3, 1);
 
 /* ---------- Pilgrim's Rest ---------- */
 
@@ -1062,13 +1064,13 @@ const ZONES = [
 ];
 
 const MAP = {
-  version: 2,
+  version: 3,
   bounds: BOUNDS,
   spawn: SPAWN,
   colliders,
   camps: CAMPS,
   chests: CHESTS,
-  bonfires: BONFIRES,
+  graces: GRACES,
   zones: ZONES,
   road: ROAD,
   trails: TRAILS,
@@ -1094,8 +1096,8 @@ ${lines(MAP.camps)}
   chests: [
 ${lines(MAP.chests)}
   ],
-  bonfires: [
-${lines(MAP.bonfires)}
+  graces: [
+${lines(MAP.graces)}
   ],
   zones: [
 ${lines(MAP.zones)}

@@ -1,19 +1,16 @@
 import type { ReactNode } from 'react';
 import { findClass, STAT_INFO, STAT_KEYS } from '../../../shared/classes';
+import { upgradeCost } from '../../../shared/combat';
 import type { Player } from '../api';
 import { BinaryDust } from './BinaryDust';
 import { AchievementGlyph } from './AchievementGlyph';
 import { Avatar } from './Avatar';
 import { Divider, Panel } from './Ornaments';
 
-/** XP needed to reach the next level. The game server will use the same curve. */
-export function xpForNextLevel(level: number): number {
-  return Math.floor(100 * Math.pow(level, 1.5));
-}
-
 export function CharacterSheet({ player, portraitActions }: { player: Player; portraitActions?: ReactNode }) {
-  const needed = xpForNextLevel(player.level);
-  const xpShare = Math.min(100, (player.xp / needed) * 100);
+  // Levels are bought with dust at a Binary Grace, so this bar is how close the next one is.
+  const needed = upgradeCost(player.level);
+  const dustShare = Math.min(100, (player.binaryDust / needed) * 100);
   const earned = player.achievements.filter((item) => item.unlockedAt);
   const { record } = player;
   const classDefinition = findClass(player.classId);
@@ -28,9 +25,9 @@ export function CharacterSheet({ player, portraitActions }: { player: Player; po
           {classDefinition ? ` ${classDefinition.name}` : ''}
         </p>
         <div className="xp">
-          <div className="bar bar--xp"><span style={{ width: `${xpShare}%` }} /></div>
+          <div className="bar bar--xp"><span style={{ width: `${dustShare}%` }} /></div>
           <p className="xp__label">
-            {player.xp.toLocaleString()} / {needed.toLocaleString()} XP
+            {player.binaryDust.toLocaleString()} / {needed.toLocaleString()} Binary Dust for the next level
           </p>
         </div>
         <p className="sheet__joined">Joined {new Date(player.joinedAt).toLocaleDateString()}</p>

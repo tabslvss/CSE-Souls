@@ -24,6 +24,40 @@ export interface ProjectileShape {
   /** Meters of area damage around the impact. 0 hits one target. */
   splash: number;
   maxTargets: number;
+  /** Set on a shot that curves toward a target. */
+  homing?: HomingShape;
+}
+
+export interface HomingShape {
+  /** Slow enough that a creature moving sideways up close can slip it. */
+  turnDegreesPerSecond: number;
+  /** Full width of the forward cone it may pick a target from. */
+  coneDegrees: number;
+  /** Meters. */
+  acquireRange: number;
+}
+
+/** A mass that falls from the sky a moment after the cast and damages everything around where it lands. */
+export interface MeteorShape {
+  /** Seconds from the cast to the impact, which is the warning everyone gets. */
+  delaySeconds: number;
+  /** Meters: how far away a target can be chosen. */
+  castRange: number;
+  coneDegrees: number;
+  /** Meters ahead it lands when there's nothing to aim at. */
+  aheadDistance: number;
+  /** Meters of damage around the impact. */
+  radius: number;
+  maxTargets: number;
+}
+
+/** A wide blade of light released by a swing. maxTargets is how many creatures it cuts before it's spent. */
+export interface CrescentShape extends ProjectileShape {
+  /** Meters from tip to tip. */
+  width: number;
+  /** Damage and stagger as shares of the swing's, since it comes on top of the swing. */
+  damageShare: number;
+  staggerShare: number;
 }
 
 export interface WeaponStats {
@@ -44,6 +78,8 @@ export interface WeaponStats {
   attackMoveMultiplier: number;
   melee?: MeleeShape;
   projectile?: ProjectileShape;
+  meteor?: MeteorShape;
+  crescent?: CrescentShape;
 }
 
 /** Order matches the weapon setups in client/src/game/armory.ts, selected by appearance.variant. */
@@ -59,9 +95,9 @@ export const WEAPONS: Record<ClassId, readonly [WeaponStats, WeaponStats, Weapon
     { label: 'Zweihander', style: 'heavy', governing: 'dexterity', damage: 42, attackSeconds: 1.15, hitAt: 0.5, cost: 24, usesMagic: false, stagger: 48, attackMoveMultiplier: 0.2, melee: { reach: 3.2, arcDegrees: 120, maxTargets: 4 } },
   ],
   arcanist: [
-    { label: 'Magic staff', style: 'magic', governing: 'arcane', damage: 30, attackSeconds: 0.9, hitAt: 0.5, cost: 12, usesMagic: true, stagger: 15, attackMoveMultiplier: 0.4, projectile: { speed: 16, range: 24, splash: 1.8, maxTargets: 3 } },
-    { label: 'Wand and tome', style: 'magic', governing: 'arcane', damage: 17, attackSeconds: 0.55, hitAt: 0.5, cost: 7, usesMagic: true, stagger: 6, attackMoveMultiplier: 0.5, projectile: { speed: 22, range: 26, splash: 0, maxTargets: 1 } },
-    { label: 'Quarterstaff', style: 'magic', governing: 'arcane', damage: 26, attackSeconds: 0.8, hitAt: 0.5, cost: 8, usesMagic: true, stagger: 24, attackMoveMultiplier: 0.3, melee: { reach: 3, arcDegrees: 120, maxTargets: 3 } },
+    { label: 'Magic staff', style: 'magic', governing: 'arcane', damage: 58, attackSeconds: 1.5, hitAt: 0.5, cost: 30, usesMagic: true, stagger: 45, attackMoveMultiplier: 0.25, meteor: { delaySeconds: 1.1, castRange: 22, coneDegrees: 80, aheadDistance: 11, radius: 6.5, maxTargets: 8 } },
+    { label: 'Wand and tome', style: 'magic', governing: 'arcane', damage: 17, attackSeconds: 0.55, hitAt: 0.5, cost: 7, usesMagic: true, stagger: 6, attackMoveMultiplier: 0.5, projectile: { speed: 24, range: 28, splash: 0, maxTargets: 1, homing: { turnDegreesPerSecond: 170, coneDegrees: 70, acquireRange: 24 } } },
+    { label: 'Quarterstaff', style: 'magic', governing: 'arcane', damage: 26, attackSeconds: 0.8, hitAt: 0.5, cost: 11, usesMagic: true, stagger: 24, attackMoveMultiplier: 0.3, melee: { reach: 3, arcDegrees: 120, maxTargets: 3 }, crescent: { speed: 15, range: 13, splash: 0, maxTargets: 5, width: 5, damageShare: 0.6, staggerShare: 0.35 } },
   ],
   ranger: [
     { label: 'Longbow', style: 'arrow', governing: 'dexterity', damage: 34, attackSeconds: 1.05, hitAt: 0.58, cost: 12, usesMagic: false, stagger: 10, attackMoveMultiplier: 0.45, projectile: { speed: 34, range: 38, splash: 0, maxTargets: 1 } },
@@ -104,6 +140,26 @@ export function inMeleeArc(
   const distance = Math.sqrt(distanceSquared);
   const facing = (dx * Math.sin(yaw) + dz * Math.cos(yaw)) / distance;
   return facing >= Math.cos((melee.arcDegrees * Math.PI) / 360);
+}
+
+/**
+ * Turns a direction toward an offset by at most maxTurn radians. The server and the browser both
+ * use this, so a bolt curves the same on screen as it does in the real simulation.
+ */
+export function steerToward(
+  dirX: number,
+  dirZ: number,
+  toX: number,
+  toZ: number,
+  maxTurn: number,
+  out: { x: number; z: number },
+): void {
+  const wanted = Math.atan2(dirX * toZ - dirZ * toX, dirX * toX + dirZ * toZ);
+  const turn = Math.max(-maxTurn, Math.min(maxTurn, wanted));
+  const cos = Math.cos(turn);
+  const sin = Math.sin(turn);
+  out.x = dirX * cos - dirZ * sin;
+  out.z = dirX * sin + dirZ * cos;
 }
 
 /* Binary Dust and levels. */

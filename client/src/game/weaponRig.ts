@@ -59,6 +59,43 @@ const BOW_DRAW_HAND_ROLL = -1;
 const QUIVER_AT: readonly [number, number, number] = [-0.25, 1.07, -0.22];
 const QUIVER_TIP_BACK = -0.25;
 const QUIVER_TIP_OUT = -0.04;
+/** A bow worn on the back, as [right, up, forward] from the chest: top over the right shoulder, grip pointing away from the body. */
+const BOW_BACK_HEAD: Vec3 = [0.5, 0.86, 0];
+const BOW_BACK_EDGE: Vec3 = [0, 0, -1];
+const BOW_BACK_HEIGHT = -0.02;
+/** How far behind the chest bone the string lies, which puts it against the back and not inside it. */
+const BOW_BACK_CLEARANCE = 0.17;
+/** Stays in hand this long after the last shot, so that quick repeat shots don't send it back and forth. */
+const BOW_READY_SECONDS = 1.2;
+const BOW_STOW_SECONDS = 0.35;
+/** The share of an attack in which the bow goes from back to hand. It leaves once the right hand has reached it. */
+const BOW_TAKE_FROM = 0.045;
+const BOW_TAKE_UNTIL = 0.13;
+/** The right hand is at the quiver by the shot's first key, so the reach behind the shoulder has to be over by then. */
+const BOW_REACH_UNTIL = 0.1;
+const BOW_REACH_AT: Vec3 = [0.14, 0.2, -0.16];
+/** How far the bow swings left and up on the way, so that it goes around the torso and not through it. */
+const BOW_ARC_OUT = 0.2;
+const BOW_ARC_UP = 0.08;
+const RELAXED_FINGERS = 0.3;
+/**
+ * Sitting on the ground at a Binary Grace. The library's only sit clip is for a chair, so this is authored:
+ * the pelvis drops close to the ground, the feet come in with the soles toward each other, and the knees fall out.
+ */
+const SIT_HIPS_DOWN = 0.74;
+const SIT_FOOT_OUT = 0.13;
+const SIT_FOOT_FORWARD = 0.42;
+const SIT_TOE_OUT = 0.9;
+const SIT_LEAN = 0.22;
+/** Where a palm rests on its knee, from the chest: [out to the side, up, forward]. */
+const SIT_HAND: Vec3 = [0.3, -0.2, 0.3];
+const SIT_FINGERS = 0.45;
+const SIT_SECONDS = 0.7;
+/** The knee aims this way while sitting, as [out to the side, up, forward]. A forward aim would be in line with the leg. */
+const SIT_KNEE_OUT = 0.9;
+const SIT_KNEE_UP = 0.75;
+const SIT_KNEE_FORWARD = 0.25;
+const SIT_BLEND_RATE = 7;
 
 const SPINE_NAMES = ['spine_01', 'spine_02', 'spine_03'];
 const SPINE_SHARE = [0.25, 0.35, 0.4];
@@ -355,6 +392,10 @@ interface CompiledSetup {
   jump: Frame;
   /** Every limb goes limp to the clip. */
   death: Frame;
+  /** A bow on the back: the clips move the whole body, and the hands hold nothing. */
+  slung: Frame;
+  /** Sitting on the ground, with nothing in the hands. */
+  rest: Frame;
   attacks: CompiledAttack[];
 }
 
@@ -426,6 +467,8 @@ function compileSetup(setup: WeaponSetup): CompiledSetup {
       edge: DRINK_WEAPON.edge,
     });
   }
+  // A bow stays on the back for the drink, so the other arm stays with the clip.
+  if (setup.bow) drink.ch[C.MAIN_WEIGHT] = 0;
   drink.ch[C.SECOND_HAND] = 0;
   drink.ch[C.TURN] = 0;
   drink.ch[C.FREE_WEIGHT] = 1;
@@ -436,6 +479,23 @@ function compileSetup(setup: WeaponSetup): CompiledSetup {
   death.ch[C.OFF_WEIGHT] = 0;
   death.ch[C.SECOND_HAND] = 0;
   death.ch[C.FREE_WEIGHT] = 0;
+  // Keeps the stance's hand positions under weights of 0, so that a shot's hands rise from there as the weights come up.
+  const slung = clearBody(copyFrame(idle, makeFrame()));
+  slung.ch[C.TURN] = 0;
+  slung.ch[C.HEAD_PITCH] = 0;
+  slung.ch[C.MAIN_WEIGHT] = 0;
+  slung.ch[C.SECOND_HAND] = 0;
+  slung.ch[C.FREE_WEIGHT] = 0;
+  const rest = copyFrame(death, makeFrame());
+  rest.ch[C.HIPS + 1] = -SIT_HIPS_DOWN;
+  rest.ch[C.LEAN] = SIT_LEAN;
+  rest.ch[C.STEADY] = 1;
+  rest.ch[C.BREATH] = 0.6;
+  rest.ch[C.HEAD] = 1;
+  setFoot(rest.ch, C.FOOT_L, [-SIT_FOOT_OUT, 0, SIT_FOOT_FORWARD]);
+  setFoot(rest.ch, C.FOOT_R, [SIT_FOOT_OUT, 0, SIT_FOOT_FORWARD]);
+  rest.ch[C.FOOT_L + 3] = SIT_TOE_OUT;
+  rest.ch[C.FOOT_R + 3] = SIT_TOE_OUT;
   const compiled: CompiledSetup = {
     idle,
     walk,
@@ -445,6 +505,8 @@ function compileSetup(setup: WeaponSetup): CompiledSetup {
     drink,
     jump: clearBody(copyFrame(idle, makeFrame())),
     death,
+    slung,
+    rest,
     attacks: setup.attacks.map((attack) => {
       const keys = attack.keys;
       return {
@@ -1053,6 +1115,9 @@ export function createWeaponRig(
   let arrow: THREE.Object3D | null = null;
   let bowLimbs: THREE.Group | null = null;
   let quiver: THREE.Group | null = null;
+  // Where the bow is worn, from the chest with its rest rotation taken out, so that these stay in the model's axes.
+  const bowBackAt = new THREE.Vector3();
+  const bowBackTurn = new THREE.Quaternion();
   let braceDepth = 0;
   let bowTip = 0;
   if (setup.bow && mainItem) {
@@ -1074,6 +1139,8 @@ export function createWeaponRig(
     });
     braceDepth = -local.min.z - 0.03;
     bowTip = local.max.y - 0.015;
+    toModel([0, BOW_BACK_HEIGHT, -(BOW_BACK_CLEARANCE + braceDepth)], bowBackAt);
+    basisQuaternion(toModel(BOW_BACK_HEAD, v1), toModel(BOW_BACK_EDGE, v2), bowBackTurn);
     const geometry = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, bowTip, -braceDepth),
       new THREE.Vector3(0, 0, -braceDepth),
@@ -1132,9 +1199,10 @@ export function createWeaponRig(
   const pelvisClipPlace = pelvis.position.clone();
 
   // The pose being shown, and how it's put together.
-  const output = copyFrame(compiled.idle, makeFrame());
+  const firstFrame = setup.bow ? compiled.slung : compiled.idle;
+  const output = copyFrame(firstFrame, makeFrame());
   const sampled = makeFrame();
-  const entry = copyFrame(compiled.idle, makeFrame());
+  const entry = copyFrame(firstFrame, makeFrame());
   const carried = new Float32Array(C.COUNT);
   const carriedMain = new THREE.Quaternion();
   const carriedOff = new THREE.Quaternion();
@@ -1157,6 +1225,13 @@ export function createWeaponRig(
   let bowFlex = 0;
   let bowFlexSpeed = 0;
   let arrowDrawn = false;
+  // A bow's place: whether the body has let go of it, and from 0 on the back to 1 in the hand.
+  let bowSlung = !!setup.bow;
+  let sitBlend = 0;
+  let weaponsPutAway = false;
+  let bowReadyLeft = 0;
+  let bowInHand = 0;
+  let bowFromBack = false;
   let stretch = 0;
   let legStretch = 0;
   let clock = 0;
@@ -1188,6 +1263,11 @@ export function createWeaponRig(
   const limbTarget = new THREE.Vector3();
   const limbPole = new THREE.Vector3();
   const limbRotation = new THREE.Quaternion();
+  const bowPlace = new THREE.Vector3();
+  const bowHandPlace = new THREE.Vector3();
+  const bowTurn = new THREE.Quaternion();
+  const bowHandTurn = new THREE.Quaternion();
+  const bowChestTurn = new THREE.Quaternion();
 
   /**
    * Feet moved a long way by a blend would slide across the floor. This lifts them instead, the one
@@ -1292,6 +1372,14 @@ export function createWeaponRig(
   };
 
   const sample = (animation: AnimationId) => {
+    if (animation === 'rest') {
+      copyFrame(compiled.rest, sampled);
+      return;
+    }
+    if (bowSlung && animation !== 'drink') {
+      copyFrame(compiled.slung, sampled);
+      return;
+    }
     switch (animation) {
       case 'attack':
         sampleAttack();
@@ -1333,6 +1421,79 @@ export function createWeaponRig(
     if (carryIsStep) stepFeet(output.ch, stepFrom, sampled.ch, carryAge);
     output.main.identity().slerp(carriedMain, left).multiply(sampled.main);
     output.off.identity().slerp(carriedOff, left).multiply(sampled.off);
+  };
+
+  /** Decides where the bow belongs this frame. Running and rolling put it away at once, whatever the delay has left. */
+  const updateBowCarry = (seconds: number, animation: AnimationId) => {
+    if (animation === 'attack') bowReadyLeft = BOW_READY_SECONDS;
+    else if (animation === 'idle' || animation === 'walk' || animation === 'hit') bowReadyLeft = Math.max(0, bowReadyLeft - seconds);
+    else bowReadyLeft = 0;
+    const wasSlung = bowSlung;
+    bowSlung = animation !== 'attack' && animation !== 'death' && bowReadyLeft <= 0;
+    if (bowSlung && !wasSlung) {
+      // Letting go is a blend like any other, so the arms ease back to the clips without a pop.
+      needsCarry = true;
+      carryIsStep = false;
+      carrySeconds = BOW_STOW_SECONDS;
+    }
+    if (animation === 'attack') {
+      const taken = (attackClock / attackSeconds - BOW_TAKE_FROM) / (BOW_TAKE_UNTIL - BOW_TAKE_FROM);
+      bowInHand = Math.max(bowInHand, Math.min(1, taken));
+    } else if (animation !== 'death') {
+      // Dead hands stay as they were: a bow in hand falls with the hand.
+      bowInHand = Math.min(1, Math.max(0, bowInHand + ((bowSlung ? -1 : 1) * seconds) / BOW_STOW_SECONDS));
+    }
+  };
+
+  /** A shot that starts from the back sends the right hand behind the shoulder first. The bell is gone by the shot's first key, which then plays as authored. */
+  const reachForBow = () => {
+    const u = attackClock / (attackSeconds * BOW_REACH_UNTIL);
+    if (u >= 1) return;
+    const { ch } = output;
+    const bell = Math.sin(u * Math.PI) ** 2;
+    ch[C.FREE] += (-BOW_REACH_AT[0] - ch[C.FREE]) * bell;
+    ch[C.FREE + 1] += (BOW_REACH_AT[1] - ch[C.FREE + 1]) * bell;
+    ch[C.FREE + 2] += (BOW_REACH_AT[2] - ch[C.FREE + 2]) * bell;
+    ch[C.FREE_WEIGHT] = Math.max(ch[C.FREE_WEIGHT], smoothStep(0, 0.4, u));
+  };
+
+  /**
+   * The bow stays a child of the hand, so the string and arrow need nothing new. This runs last and turns the
+   * chest's mount into the hand's frame. Everything is relative, so the bow rides on spine_03 when fully on the back.
+   */
+  const placeBow = () => {
+    if (!mainItem || !mainArm) return;
+    const u = smoothStep(0, 1, bowInHand);
+    if (u >= 0.999) return;
+    const hand = mainArm.limb.end;
+    worldRotation(chest, bowChestTurn).multiply(chestRest);
+    worldPosition(chest, bowPlace).add(scratchV.copy(bowBackAt).applyQuaternion(bowChestTurn));
+    bowTurn.copy(bowChestTurn).multiply(bowBackTurn);
+    worldRotation(hand, scratchQ);
+    if (u > 0.001) {
+      hand.localToWorld(bowHandPlace.copy(mainArm.palm));
+      bowHandTurn.copy(scratchQ).multiply(mainItem.gripRotation);
+      bowPlace.lerp(bowHandPlace, u);
+      const arc = Math.sin(u * Math.PI);
+      bowPlace.add(scratchV.set(BOW_ARC_OUT * arc, BOW_ARC_UP * arc, 0).applyQuaternion(bowChestTurn));
+      bowTurn.slerp(bowHandTurn, u);
+    }
+    mainItem.holder.position.copy(hand.worldToLocal(bowPlace));
+    mainItem.holder.quaternion.copy(scratchQ.invert()).multiply(bowTurn);
+    mainItem.holder.updateWorldMatrix(false, true);
+  };
+
+  /** Both hands come to rest on the knees. Each uses the free hand's reach in turn, with its side mirrored. */
+  const restHands = () => {
+    const { ch } = output;
+    for (const arm of [arms.l, arms.r]) {
+      if (!arm) continue;
+      ch[C.FREE] = (arm.hand === 'l' ? 1 : -1) * SIT_HAND[0];
+      ch[C.FREE + 1] = SIT_HAND[1];
+      ch[C.FREE + 2] = SIT_HAND[2];
+      reachFree(arm, 0, sitBlend);
+      closeHand(arm, SIT_FINGERS, sitBlend);
+    }
   };
 
   /** Lets the shoulder come forward and up with the arm when it needs the extra reach. */
@@ -1460,6 +1621,10 @@ export function createWeaponRig(
       const length = limbPole.length();
       scratchV.set(yawSin + side * KNEE_OUTWARD, 0, yawCos).applyQuaternion(modelRotation);
       limbPole.divideScalar(Math.max(length, 0.0001)).lerp(scratchV, weight);
+    }
+    if (sitBlend > 0.002) {
+      scratchV.set(side * SIT_KNEE_OUT, SIT_KNEE_UP, SIT_KNEE_FORWARD).applyQuaternion(modelRotation);
+      limbPole.normalize().lerp(scratchV, sitBlend);
     }
 
     legStretch = Math.max(legStretch, solveLimb(limb, limbTarget, limbPole, limbRotation, 0, solveWeight));
@@ -1681,7 +1846,12 @@ export function createWeaponRig(
       }
     }
 
-    if (mainArm) closeHand(mainArm, mainItem?.spec.curl ?? 1, 1, mainItem?.spec.thumb);
+    // A bow's hands are empty until they take hold, and the weights below blend from this into the grip.
+    if (setup.bow) {
+      if (mainArm) closeHand(mainArm, RELAXED_FINGERS, 1);
+      if (otherArm) closeHand(otherArm, RELAXED_FINGERS, 1);
+    }
+    if (mainArm) closeHand(mainArm, mainItem?.spec.curl ?? 1, setup.bow ? Math.min(1, mainWeight) : 1, mainItem?.spec.thumb);
     if (otherArm) {
       if (offItem) closeHand(otherArm, offItem.spec.curl ?? 1, 1);
       else {
@@ -1722,6 +1892,7 @@ export function createWeaponRig(
       if (animation !== source) {
         carryIsStep = source === 'attack' && animation === 'idle';
         const leavingRun = source === 'run';
+        const leavingRest = source === 'rest';
         source = animation;
         needsCarry = true;
         carrySeconds =
@@ -1736,15 +1907,18 @@ export function createWeaponRig(
                   : carryIsStep
                     ? RECOVER_TRANSITION_SECONDS
                     : TRANSITION_SECONDS;
+        if (animation === 'rest' || leavingRest) carrySeconds = SIT_SECONDS;
         if (animation === 'drink') drinkClock = 0;
         if (animation === 'dodge') dodgeClock = 0;
       }
       if (animation === 'drink') drinkClock += seconds;
       if (animation === 'dodge') dodgeClock += seconds;
+      if (setup.bow) updateBowCarry(seconds, animation);
 
       sample(animation);
       carryAge = Math.min(1, carryAge + seconds / carrySeconds);
       composeOutput();
+      if (bowFromBack && animation === 'attack') reachForBow();
       const { ch } = output;
       const wantsBowHand = ch[C.DRAW] > 0.01 ? 1 : 0;
       bowHands += (wantsBowHand - bowHands) * (1 - Math.exp(-seconds * SECOND_HAND_RATE));
@@ -1756,9 +1930,17 @@ export function createWeaponRig(
       stretch = 0;
       legStretch = 0;
       twistBlend = 1 - Math.exp(-seconds * FOREARM_TWIST_RATE);
+      // Back in the hand's grip for the arms' pass, because the drawing hand reaches for the string through it.
+      if (setup.bow && mainItem && mainArm) {
+        mainItem.holder.position.copy(mainArm.palm);
+        mainItem.holder.quaternion.copy(mainItem.gripRotation);
+      }
       model.updateWorldMatrix(true, true);
       moveBody();
       moveArms();
+      sitBlend += ((animation === 'rest' ? 1 : 0) - sitBlend) * (1 - Math.exp(-seconds * SIT_BLEND_RATE));
+      if (sitBlend > 0.002) restHands();
+      if (setup.bow) placeBow();
       if (flask && drinkArm) {
         const d = animation === 'drink' ? drinkClock / drinkSeconds : -1;
         const shown = d < 0 ? 0 : smoothStep(0, 0.1, d) * (1 - smoothStep(0.9, 1, d));
@@ -1771,6 +1953,12 @@ export function createWeaponRig(
           flask.scale.copy(flaskScale).multiplyScalar(shown);
         }
         if (offItem && mainItem) mainItem.holder.visible = animation !== 'drink';
+      }
+      // Everything carried is put away while sitting, and comes back in the same frame the player stands.
+      if (animation === 'rest' || weaponsPutAway) {
+        weaponsPutAway = animation === 'rest';
+        for (const item of mounted) item.holder.visible = !weaponsPutAway;
+        if (quiver) quiver.visible = !weaponsPutAway;
       }
       if (offItem?.built) {
         animateOpenBook(offItem.holder.children[0], clock, attacking ? Math.min(1, attackClock / attackSeconds) : -1);
@@ -1830,6 +2018,7 @@ export function createWeaponRig(
       attackClock = 0;
       attacking = true;
       arrowDrawn = false;
+      bowFromBack = bowInHand < 0.5;
       copyFrame(output, entry);
       if (source === 'attack') {
         // A new attack straight after another: the entry pose already covers the switch.

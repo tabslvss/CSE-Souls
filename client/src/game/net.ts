@@ -1,3 +1,4 @@
+import type { StatKey } from '../../../shared/classes';
 import { weaponFor } from '../../../shared/combat';
 import { MAP } from '../../../shared/mapData';
 import type {
@@ -6,6 +7,7 @@ import type {
   GameEvent,
   PlayerInfo,
   PlayerSnapshot,
+  RefusalReason,
   ServerMessage,
 } from '../../../shared/protocol';
 import {
@@ -50,6 +52,7 @@ export interface RemoteFrame {
   staggerTime: number;
   drinkTime: number;
   jumpTime: number;
+  resting: number;
 }
 
 export interface NetPlayer {
@@ -64,13 +67,21 @@ export interface NetEvents {
   onJoin: (player: PlayerInfo) => void;
   onLeave: (id: number) => void;
   /** Called on every (re)connect, with the full player list. */
-  onWelcome: (myId: number, players: PlayerInfo[], binaryDust: number, chests: number[]) => void;
+  onWelcome: (myId: number, players: PlayerInfo[], binaryDust: number, chests: number[], graces: number[]) => void;
   onCreatures: (creatures: CreatureSnapshot[]) => void;
   /** Runs after onCreatures for the same snapshot, so a hit can always find its creature. */
   onGameEvents: (events: GameEvent[]) => void;
   onSelf: (dust: number, kills: number) => void;
   onChest: (id: number, dust: number, potion: boolean) => void;
   onUnlock: (achievement: string) => void;
+  /** You lit a Binary Grace for the first time on this save. */
+  onGrace: (id: number) => void;
+  /** What the server says about where you're sitting: a grace id, or 0 once you're up. */
+  onResting: (grace: number) => void;
+  /** A player's public details changed. The connection has already updated its own copy. */
+  onInfo: (player: PlayerInfo) => void;
+  onUpgraded: (stat: StatKey) => void;
+  onRefused: (reason: RefusalReason) => void;
 }
 
 /** What one fixed step reads from the keyboard and mouse. Interact only goes to the server. */
@@ -128,6 +139,11 @@ export class GameConnection {
   private disposed = false;
   private attempts = 0;
   private retryTimer = 0;
+  /**
+   * The last answer from the server, kept apart from state.resting: prediction can stand you up a moment
+   * before the server hears of it, and that must not look like sitting back down when a snapshot arrives.
+   */
+  private serverResting = 0;
 
   constructor(private readonly events: NetEvents) {
     this.connect();
@@ -162,7 +178,7 @@ export class GameConnection {
       case 'welcome':
         if (reloadForNewMap(message.mapVersion)) return;
         this.attempts = 0;
-        this.onWelcome(message.you, message.players, message.snapshot, message.binaryDust, message.chests);
+        this.onWelcome(message.you, message.players, message.snapshot, message.binaryDust, message.chests, message.graces);
         this.events.onStatus('open');
         break;
       case 'join':
@@ -187,6 +203,18 @@ export class GameConnection {
       case 'unlock':
         this.events.onUnlock(message.achievement);
         break;
+      case 'grace':
+        this.events.onGrace(message.id);
+        break;
+      case 'info':
+        this.onInfo(message.player);
+        break;
+      case 'upgraded':
+        this.events.onUpgraded(message.stat);
+        break;
+      case 'refused':
+        this.events.onRefused(message.reason);
+        break;
       case 'no_character':
         this.disposed = true;
         this.events.onStatus('no_character');
@@ -194,8 +222,30 @@ export class GameConnection {
     }
   }
 
-  private onWelcome(you: number, infos: PlayerInfo[], snapshot: PlayerSnapshot[], dust: number, chests: number[]): void {
+  private onInfo(info: PlayerInfo): void {
+    const player = this.players.get(info.id);
+    if (!player) return;
+    player.info = info;
+    // Your own raised stats have to reach prediction at once, or it would disagree with the server.
+    if (info.id === this.myId) this.derived = deriveStats(info.stats, weaponFor(info.classId, info.appearance.variant));
+    this.events.onInfo(info);
+  }
+
+  /** Asks the server for something. It decides, and the answer comes back in a later message. */
+  send(message: Exclude<ClientMessage, { t: 'i' }>): void {
+    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message));
+  }
+
+  private onWelcome(
+    you: number,
+    infos: PlayerInfo[],
+    snapshot: PlayerSnapshot[],
+    dust: number,
+    chests: number[],
+    graces: number[],
+  ): void {
     this.myId = you;
+    this.setServerResting(0);
     this.players.clear();
     this.pending = [];
     this.sentAt.clear();
@@ -211,7 +261,7 @@ export class GameConnection {
     if (entry) applySnapshot(entry, this.state);
     this.previous = { ...this.state };
 
-    this.events.onWelcome(you, infos, dust, chests);
+    this.events.onWelcome(you, infos, dust, chests, graces);
     this.onSnapshot(0, snapshot);
   }
 
@@ -238,6 +288,7 @@ export class GameConnection {
         staggerTime: entry[14],
         drinkTime: entry[19],
         jumpTime: entry[20],
+        resting: entry[21],
       });
       if (player.frames.length > MAX_SNAPSHOTS_KEPT) player.frames.shift();
     }
@@ -253,6 +304,7 @@ export class GameConnection {
       if (seq <= ack) this.sentAt.delete(seq);
     }
     this.pending = this.pending.filter((input) => input.seq > ack);
+    this.setServerResting(entry[21]);
 
     const predictedX = this.state.x;
     const predictedZ = this.state.z;
@@ -269,6 +321,12 @@ export class GameConnection {
       this.correction.x = 0;
       this.correction.z = 0;
     }
+  }
+
+  private setServerResting(grace: number): void {
+    if (grace === this.serverResting) return;
+    this.serverResting = grace;
+    this.events.onResting(grace);
   }
 
   /** Runs fixed simulation steps for the time that passed, then sends those inputs. */

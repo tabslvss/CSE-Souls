@@ -7,12 +7,13 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
-import { CLASSES, DEFAULT_APPEARANCE, type ClassId } from '../../shared/classes.js';
+import { CLASSES, DEFAULT_APPEARANCE, MAX_STAT, type ClassId } from '../../shared/classes.js';
 import { collide, segmentBlocked } from '../../shared/collision.js';
-import { attackDamage, CHEST_REWARD_DUST, INTERACT_RANGE, RESPAWN_SECONDS, weaponFor } from '../../shared/combat.js';
+import { attackDamage, CHEST_REWARD_DUST, INTERACT_RANGE, RESPAWN_SECONDS, upgradeCost, weaponFor } from '../../shared/combat.js';
 import { CORPSE_SECONDS, CREATURE_BY_ID, CreatureState, MAX_ATTACKERS_PER_PLAYER } from '../../shared/creatures.js';
 import { MAP } from '../../shared/mapData.js';
-import type { MapBonfire, MapCamp, MapChest } from '../../shared/mapTypes.js';
+import { GRACE_DISCOVER_RADIUS, GRACE_SEATS } from '../../shared/graces.js';
+import type { MapCamp, MapChest, MapGrace } from '../../shared/mapTypes.js';
 import {
   FLAG_ATTACK,
   FLAG_DODGE,
@@ -23,6 +24,7 @@ import {
   MAX_FLAGS,
   type GameEvent,
   type ServerMessage,
+  packSnapshot,
 } from '../../shared/protocol.js';
 import {
   deriveStats,
@@ -33,7 +35,7 @@ import {
   STARTING_POTIONS,
   TICK_RATE,
 } from '../../shared/sim.js';
-import { parseInput, withLoadTestCreatures, World, type ServerInput, type WorldPlayer } from '../src/app/combat.js';
+import { parseAction, parseInput, withLoadTestCreatures, World, type ServerInput, type WorldPlayer } from '../src/app/combat.js';
 import { Mode, type Creature } from '../src/app/creatures.js';
 import { ProgressStore } from '../src/app/progress.js';
 
@@ -68,13 +70,17 @@ interface Staged {
   events: GameEvent[];
   /** Advances one tick and collects the events the first player would be sent. */
   tick(count?: number): GameEvent[];
-  join(classId: ClassId, variant?: number, chests?: number[]): WorldPlayer;
+  discovered: number[];
+  respawns: number[];
+  upgrades: Array<{ stat: string; cost: number }>;
+  upgradeAnswer: () => Promise<boolean>;
+  join(classId: ClassId, variant?: number, chests?: number[], graces?: number[]): WorldPlayer;
   moveTo(thing: { state: { x: number; z: number } }, dx: number, dz: number): void;
   place(creature: Creature, dx: number, dz: number): void;
   camps: (kind: string, count: number) => MapCamp;
 }
 
-function stage(options: { camps?: MapCamp[]; chests?: MapChest[]; bonfires?: MapBonfire[]; rollHigh?: boolean } = {}): Staged {
+function stage(options: { camps?: MapCamp[]; chests?: MapChest[]; graces?: MapGrace[]; rollHigh?: boolean } = {}): Staged {
   const staged: Staged = {
     sent: [],
     credits: [],
@@ -82,6 +88,10 @@ function stage(options: { camps?: MapCamp[]; chests?: MapChest[]; bonfires?: Map
     chestAnswer: async () => true,
     unlocks: [],
     events: [],
+    discovered: [],
+    respawns: [],
+    upgrades: [],
+    upgradeAnswer: async () => true,
     tick(count = 1) {
       const collected: GameEvent[] = [];
       for (let index = 0; index < count; index += 1) {
@@ -97,10 +107,11 @@ function stage(options: { camps?: MapCamp[]; chests?: MapChest[]; bonfires?: Map
       staged.events.push(...collected);
       return collected;
     },
-    join(classId, variant = 0, chests = []) {
+    join(classId, variant = 0, chests = [], graces = []) {
       const baseStats = CLASSES.find((item) => item.id === classId)!.baseStats;
       const player = world.addPlayer({
         userId: `user-${classId}-${Math.random()}`,
+        slot: 1,
         info: {
           id: 0,
           username: 'test',
@@ -114,6 +125,8 @@ function stage(options: { camps?: MapCamp[]; chests?: MapChest[]; bonfires?: Map
         enemies: 0,
         animals: 0,
         chests,
+        graces,
+        respawnGrace: null,
         achievements: [],
       });
       staged.moveTo(player, 0, 0);
@@ -143,12 +156,22 @@ function stage(options: { camps?: MapCamp[]; chests?: MapChest[]; bonfires?: Map
         staged.unlocks.push(achievement);
         return true;
       },
+      discoverGrace: async (_player, grace) => {
+        staged.discovered.push(grace.id);
+      },
+      saveRespawn: async (_player, grace) => {
+        staged.respawns.push(grace.id);
+      },
+      upgradeStat: (_player, stat, cost) => {
+        staged.upgrades.push({ stat, cost });
+        return staged.upgradeAnswer();
+      },
     },
     {
       spawn: { x: OPEN.x, z: OPEN.z, radius: 2 },
       camps: options.camps ?? [],
       chests: options.chests ?? [],
-      bonfires: options.bonfires ?? [],
+      graces: options.graces ?? [],
       // Rolling low means every chance succeeds, and the lowest amount comes out.
       random: options.rollHigh ? () => 0.999 : () => 0,
     },
@@ -172,7 +195,7 @@ function swingUntilHit(staged: Staged, player: WorldPlayer, yaw = 0): { events: 
   staged.world.queueInput(player, input({ attack: true, yaw }));
   for (let ticks = 1; ticks < 90; ticks += 1) {
     const events = staged.tick();
-    if (events.some((event) => event.k === 'hit' || event.k === 'swing' || event.k === 'shot')) return { events, ticks };
+    if (events.some((event) => event.k === 'hit' || event.k === 'swing' || event.k === 'shot' || event.k === 'meteor')) return { events, ticks };
     staged.world.queueInput(player, input({ yaw }));
   }
   throw new Error('the swing never landed');
@@ -289,6 +312,10 @@ describe('melee', () => {
         const expected = attackDamage(weapon, player.info.stats);
         if (weapon.melee) {
           assert.equal(ofKind(events, 'hit')[0]?.dmg, expected, weapon.label);
+        } else if (weapon.meteor) {
+          assert.equal(ofKind(events, 'meteor').length, 1, weapon.label);
+          const later = staged.tick(Math.round(weapon.meteor.delaySeconds * TICK_RATE));
+          assert.equal(ofKind(later, 'hit')[0]?.dmg, expected, weapon.label);
         } else {
           const [shot] = ofKind(events, 'shot');
           assert.equal(shot.speed, weapon.projectile!.speed, weapon.label);
@@ -299,6 +326,216 @@ describe('melee', () => {
         else assert.ok(player.state.stamina < player.derived.maxStamina, `${weapon.label} uses stamina`);
       }
     }
+  });
+});
+
+describe('magic weapons', () => {
+  /** Holds creatures at these offsets for some ticks, since otherwise they'd charge and shove each other. */
+  const heldTicks = (staged: Staged, spots: Array<[number, number]>, count: number): GameEvent[] => {
+    const collected: GameEvent[] = [];
+    for (let index = 0; index < count; index += 1) {
+      staged.world.field.creatures.forEach((creature, at) => staged.place(creature, spots[at][0], spots[at][1]));
+      collected.push(...staged.tick());
+    }
+    return collected;
+  };
+  const place = (staged: Staged, spots: Array<[number, number]>) =>
+    staged.world.field.creatures.forEach((creature, at) => staged.place(creature, spots[at][0], spots[at][1]));
+  /** Like swingUntilHit, but the creatures can't close in or interrupt it during the windup. */
+  const heldSwing = (staged: Staged, player: WorldPlayer, spots: Array<[number, number]>): { events: GameEvent[] } => {
+    staged.world.queueInput(player, input({ attack: true }));
+    for (let ticks = 1; ticks < 90; ticks += 1) {
+      place(staged, spots);
+      const events = staged.tick();
+      if (events.some((event) => event.k === 'hit' || event.k === 'swing' || event.k === 'shot' || event.k === 'meteor')) return { events };
+      staged.world.queueInput(player, input());
+    }
+    throw new Error('the swing never landed');
+  };
+
+  describe('homing bolts', () => {
+    it('curves onto a target that a straight shot would miss', () => {
+      const staged = stage({ camps: [staged_camp('bull')] });
+      const player = staged.join('arcanist', 1);
+      const spots: Array<[number, number]> = [[4, 12]];
+      const bull = staged.world.field.creatures[0];
+      const { events } = heldSwing(staged, player, spots);
+      const [shot] = ofKind(events, 'shot');
+      assert.equal(shot.form, 'homing');
+      assert.equal(shot.target, bull.id);
+      const flight = heldTicks(staged, spots, 30);
+      assert.equal(ofKind(flight, 'hit')[0]?.c, bull.id);
+      assert.equal(ofKind(flight, 'shotEnd')[0]?.id, shot.id);
+    });
+
+    it('turns no faster than its limit', () => {
+      const staged = stage({ camps: [staged_camp('bull')] });
+      const player = staged.join('arcanist', 1);
+      heldSwing(staged, player, [[0, 20]]);
+      const [bolt] = staged.world.projectiles;
+      assert.ok(Math.abs(bolt.dirX) < 0.001, 'it starts out straight');
+      place(staged, [[20, bolt.z - OPEN.z]]);
+      staged.tick();
+      const limit = (weaponFor('arcanist', 1).projectile!.homing!.turnDegreesPerSecond * Math.PI) / 180 / TICK_RATE;
+      assert.ok(Math.abs(Math.atan2(bolt.dirX, bolt.dirZ) - limit) < 0.01, 'one tick should turn it by exactly the limit');
+    });
+
+    it('flies straight on if its target dies', () => {
+      const staged = stage({ camps: [staged_camp('bull')] });
+      const player = staged.join('arcanist', 1);
+      const bull = staged.world.field.creatures[0];
+      heldSwing(staged, player, [[3, 18]]);
+      const [bolt] = staged.world.projectiles;
+      bull.health = 0;
+      bull.mode = Mode.Dead;
+      const { dirX, dirZ } = bolt;
+      staged.tick();
+      assert.equal(bolt.target, null);
+      assert.equal(bolt.dirX, dirX);
+      assert.equal(bolt.dirZ, dirZ);
+    });
+
+    it('prefers the lock-on target over a nearer one', () => {
+      const staged = stage({ camps: [staged_camp('bull', 2)] });
+      const player = staged.join('arcanist', 1);
+      const far = staged.world.field.creatures[1];
+      staged.world.handleAction(player, { t: 'aim', c: far.id });
+      assert.equal(ofKind(heldSwing(staged, player, [[0, 6], [3, 16]]).events, 'shot')[0].target, far.id);
+    });
+
+    it('will not follow a lock-on target that is behind the caster', () => {
+      const staged = stage({ camps: [staged_camp('bull', 2)] });
+      const player = staged.join('arcanist', 1);
+      const [front, behind] = staged.world.field.creatures;
+      staged.world.handleAction(player, { t: 'aim', c: behind.id });
+      assert.equal(ofKind(heldSwing(staged, player, [[0, 6], [0, -6]]).events, 'shot')[0].target, front.id);
+    });
+
+    it('ignores a lock-on id that matches nothing', () => {
+      const staged = stage({ camps: [staged_camp('bull')] });
+      const player = staged.join('arcanist', 1);
+      const bull = staged.world.field.creatures[0];
+      staged.world.handleAction(player, { t: 'aim', c: 999_999 });
+      assert.equal(ofKind(heldSwing(staged, player, [[0, 8]]).events, 'shot')[0].target, bull.id);
+    });
+  });
+
+  describe('meteors', () => {
+    const staff = weaponFor('arcanist', 0);
+    const meteor = staff.meteor!;
+    const delayTicks = Math.round(meteor.delaySeconds * TICK_RATE);
+
+    it('lands only after its delay, and damages all around the impact but nothing beyond it', () => {
+      const staged = stage({ camps: [staged_camp('bull', 4)] });
+      const player = staged.join('arcanist', 0);
+      const creatures = staged.world.field.creatures;
+      const reach = meteor.radius + creatures[0].kind.radius;
+      const spots: Array<[number, number]> = [[0, 10], [reach - 1, 10], [0, 10 + reach - 1], [0, 10 + reach + 4]];
+      const { events } = heldSwing(staged, player, spots);
+      const [cast] = ofKind(events, 'meteor');
+      assert.equal(cast.by, player.id);
+      assert.ok(Math.abs(cast.z - (OPEN.z + 10)) < 0.1, 'it should come down on the target');
+      assert.equal(cast.radius, meteor.radius);
+
+      const before = heldTicks(staged, spots, delayTicks - 1);
+      assert.equal(ofKind(before, 'hit').length, 0, 'nothing is hurt before it lands');
+      assert.equal(ofKind(before, 'meteorEnd').length, 0);
+      assert.equal(creatures[0].health, 320);
+
+      const landing = heldTicks(staged, spots, 1);
+      assert.equal(ofKind(landing, 'meteorEnd')[0]?.id, cast.id);
+      const hit = ofKind(landing, 'hit');
+      assert.deepEqual(hit.map((item) => item.c).sort((a, b) => a - b), [creatures[0].id, creatures[1].id, creatures[2].id].sort((a, b) => a - b));
+      assert.equal(hit[0].dmg, attackDamage(staff, player.info.stats));
+      assert.equal(creatures[3].health, 320, 'the one outside the area is untouched');
+      assert.equal(staged.world.meteors.length, 0);
+    });
+
+    it('hits its target limit and no more', () => {
+      const count = meteor.maxTargets + 3;
+      const staged = stage({ camps: [staged_camp('bull', count)] });
+      const player = staged.join('arcanist', 0);
+      const spots = Array.from({ length: count }, (_, index): [number, number] => [index * 0.2, 10 + index * 0.1]);
+      heldSwing(staged, player, spots);
+      assert.equal(ofKind(heldTicks(staged, spots, delayTicks), 'hit').length, meteor.maxTargets);
+    });
+
+    it('lands a set distance ahead with nothing to aim at, and a creature can walk out of it', () => {
+      const staged = stage({ camps: [staged_camp('bull')] });
+      const player = staged.join('arcanist', 0);
+      const spots: Array<[number, number]> = [[0, -60]];
+      const { events } = heldSwing(staged, player, spots);
+      const [cast] = ofKind(events, 'meteor');
+      if (clearance(OPEN.x, OPEN.z) > meteor.aheadDistance + 1) {
+        assert.ok(Math.abs(cast.z - (OPEN.z + meteor.aheadDistance)) < 0.1, 'it should land straight ahead');
+      }
+      const landing = heldTicks(staged, spots, delayTicks);
+      assert.equal(ofKind(landing, 'meteorEnd').length, 1);
+      assert.equal(ofKind(landing, 'hit').length, 0);
+    });
+
+    it('costs more magic than the other spells and never hurts other players', () => {
+      assert.ok(staff.cost > weaponFor('arcanist', 1).cost && staff.cost > weaponFor('arcanist', 2).cost);
+      // A deer, because a bull would bite the friend and hide what this is checking.
+      const staged = stage({ camps: [staged_camp('deer')] });
+      const player = staged.join('arcanist', 0);
+      const friend = staged.join('juggernaut', 0);
+      const spots: Array<[number, number]> = [[0, 10]];
+      staged.moveTo(friend, 0, 10);
+      const health = friend.state.health;
+      heldSwing(staged, player, spots);
+      heldTicks(staged, spots, delayTicks);
+      assert.equal(friend.state.health, health);
+    });
+  });
+
+  describe('crescents', () => {
+    const quarterstaff = weaponFor('arcanist', 2);
+    const crescent = quarterstaff.crescent!;
+    const flightTicks = Math.ceil((crescent.range / crescent.speed) * TICK_RATE) + 1;
+
+    it('cuts through a line of creatures up to its limit, once each', () => {
+      const count = crescent.maxTargets + 1;
+      const staged = stage({ camps: [staged_camp('bull', count)] });
+      const player = staged.join('arcanist', 2);
+      const spots = Array.from({ length: count }, (_, index): [number, number] => [0, 5 + index * 1.2]);
+      const { events } = heldSwing(staged, player, spots);
+      const [shot] = ofKind(events, 'shot');
+      assert.equal(shot.form, 'crescent');
+      assert.equal(shot.width, crescent.width);
+      const flight = [...events, ...heldTicks(staged, spots, flightTicks)];
+      const hits = ofKind(flight, 'hit');
+      assert.equal(hits.length, crescent.maxTargets);
+      assert.equal(new Set(hits.map((hit) => hit.c)).size, crescent.maxTargets, 'never the same one twice');
+      assert.equal(hits[0].dmg, Math.round(attackDamage(quarterstaff, player.info.stats) * crescent.damageShare));
+      assert.equal(staged.world.field.creatures[count - 1].health, 320, 'the last one was past its limit');
+      assert.equal(ofKind(flight, 'shotEnd')[0]?.id, shot.id);
+      assert.equal(staged.world.projectiles.length, 0);
+    });
+
+    it('reaches to its sides, but not beyond its width and not behind the caster', () => {
+      const staged = stage({ camps: [staged_camp('bull', 3)] });
+      const player = staged.join('arcanist', 2);
+      const [wide, outside, behind] = staged.world.field.creatures;
+      const { radius } = wide.kind;
+      const spots: Array<[number, number]> = [[crescent.width / 2 + radius - 0.5, 6], [crescent.width / 2 + radius + 2, 6], [0, -(radius + 2)]];
+      heldSwing(staged, player, spots);
+      heldTicks(staged, spots, flightTicks);
+      assert.ok(wide.health < 320, 'its tip should reach this one');
+      assert.equal(outside.health, 320);
+      assert.equal(behind.health, 320);
+    });
+
+    it('does not hit a creature the swing itself just hit', () => {
+      const staged = stage({ camps: [staged_camp('bull')] });
+      const player = staged.join('arcanist', 2);
+      const spots: Array<[number, number]> = [[0, 2]];
+      const { events } = heldSwing(staged, player, spots);
+      const flight = [...events, ...heldTicks(staged, spots, flightTicks)];
+      const hits = ofKind(flight, 'hit');
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0].dmg, attackDamage(quarterstaff, player.info.stats));
+    });
   });
 });
 
@@ -342,26 +579,6 @@ describe('projectiles', () => {
       assert.equal(end.hit, 0);
       assert.ok(Math.abs(end.z - shot.z - shot.range) < 0.1, 'it should end at its range');
     }
-  });
-
-  it('splashes up to its target limit around the impact', () => {
-    const staged = stage({ camps: [staged_camp('bull', 5)] });
-    const player = staged.join('arcanist', 0);
-    const creatures = staged.world.field.creatures;
-    // Held in place, or they'd charge and push each other apart before the shot arrives.
-    const hold = () => creatures.forEach((creature, index) => staged.place(creature, index * 0.2, 6 + index * 0.1));
-    hold();
-    swingUntilHit(staged, player);
-    const flight: GameEvent[] = [];
-    for (let index = 0; index < 15; index += 1) {
-      hold();
-      flight.push(...staged.tick());
-    }
-    const { maxTargets } = weaponFor('arcanist', 0).projectile!;
-    assert.ok(creatures.length > maxTargets);
-    assert.equal(ofKind(flight, 'hit').length, maxTargets);
-    const [end] = ofKind(flight, 'shotEnd');
-    assert.equal(end.splash, weaponFor('arcanist', 0).projectile!.splash);
   });
 
   it('passes through other players and never hurts them', () => {
@@ -417,8 +634,8 @@ describe('projectiles', () => {
 
 describe('creatures attacking players', () => {
   it('a wolf finds and bites a stationary player who sends no inputs, who then dies and respawns', () => {
-    const bonfire = { id: 1, x: OPEN.x + 70, z: OPEN.z };
-    const staged = stage({ camps: [staged_camp('wolf')], bonfires: [bonfire] });
+    const grace = { id: 1, x: OPEN.x + 70, z: OPEN.z, name: 'Test Grace' };
+    const staged = stage({ camps: [staged_camp('wolf')], graces: [grace] });
     const player = staged.join('ranger', 0);
     const wolf = staged.world.field.creatures[0];
     staged.place(wolf, -5, 0);
@@ -463,7 +680,7 @@ describe('creatures attacking players', () => {
     assert.equal(player.state.stamina, player.derived.maxStamina);
     assert.equal(player.state.potions, STARTING_POTIONS);
     assert.equal(player.state.deadTime, 0);
-    assert.ok(Math.hypot(player.state.x - bonfire.x, player.state.z - bonfire.z) < 5, 'back at the bonfire');
+    assert.ok(Math.hypot(player.state.x - grace.x, player.state.z - grace.z) < 5, 'back at the grace');
   });
 
   it('keeps a higher potion count through a respawn', () => {
@@ -807,16 +1024,16 @@ describe('creature behavior', () => {
     assert.equal(bull.visual, CreatureState.Run);
   });
 
-  it('keeps out of the circle around a bonfire and gives up on a player standing in one', () => {
-    const bonfire = { id: 1, x: OPEN.x, z: OPEN.z };
-    const staged = stage({ camps: [{ ...staged_camp('wolf'), x: OPEN.x, z: OPEN.z + 14 }], bonfires: [bonfire] });
+  it('keeps out of the circle around a grace and gives up on a player standing in one', () => {
+    const grace = { id: 1, x: OPEN.x, z: OPEN.z, name: 'Test Grace' };
+    const staged = stage({ camps: [{ ...staged_camp('wolf'), x: OPEN.x, z: OPEN.z + 14 }], graces: [grace] });
     const player = staged.join('ranger', 0);
     const wolf = staged.world.field.creatures[0];
     wolf.x = OPEN.x;
     wolf.z = OPEN.z + 11;
     for (let ticks = 0; ticks < TICK_RATE * 10; ticks += 1) {
       staged.tick();
-      assert.ok(Math.hypot(wolf.x - bonfire.x, wolf.z - bonfire.z) >= 9.99, 'it should stay out of the circle');
+      assert.ok(Math.hypot(wolf.x - grace.x, wolf.z - grace.z) >= 9.99, 'it should stay out of the circle');
     }
     assert.equal(ofKind(staged.events, 'bite').length, 0);
     assert.ok(player.state.health > 0);
@@ -1160,10 +1377,16 @@ describe('spawning', () => {
       credit: () => undefined,
       openChest: async () => false,
       unlock: async () => false,
+      discoverGrace: async () => undefined,
+      saveRespawn: async () => undefined,
+      upgradeStat: async () => false,
     });
     for (let index = 0; index < 50; index += 1) {
       const player = world.addPlayer({
         userId: String(index),
+        slot: 1,
+        graces: [],
+        respawnGrace: null,
         info: {
           id: 0,
           username: 'test',
@@ -1193,6 +1416,9 @@ describe('spawning', () => {
       credit: () => undefined,
       openChest: async () => false,
       unlock: async () => false,
+      discoverGrace: async () => undefined,
+      saveRespawn: async () => undefined,
+      upgradeStat: async () => false,
     });
     const expected = MAP.camps.reduce((sum, camp) => sum + (CREATURE_BY_ID.has(camp.kind) ? camp.count : 0), 0);
     assert.equal(world.field.creatures.length, expected);
@@ -1218,7 +1444,7 @@ describe('snapshots', () => {
     });
     const snapshot = JSON.parse(snapshotText(staged, player)) as { a: number; p: number[][]; c: number[][] };
     assert.deepEqual(snapshot.p.map((entry) => entry[0]).sort(), [player.id, other.id].sort());
-    assert.equal(snapshot.p[0].length, 20);
+    assert.equal(snapshot.p[0].length, packSnapshot(player.id, player.state).length);
     assert.equal(snapshot.c.length, 40);
     const shown = new Set(snapshot.c.map((entry) => entry[0]));
     for (let index = 0; index < 40; index += 1) assert.ok(shown.has(creatures[index].id), `nearest ${index} is shown`);
@@ -1299,12 +1525,12 @@ describe('saving progress', () => {
     const { store, calls } = fake();
     await store.flush();
     assert.equal(calls.length, 0);
-    store.add('a', { dust: 3, enemies: 1 });
-    store.add('a', { dust: 2 });
-    store.add('b', { animals: 1, deaths: 1 });
+    store.add('a', 1, { dust: 3, enemies: 1 });
+    store.add('a', 1, { dust: 2 });
+    store.add('b', 1, { animals: 1, deaths: 1 });
     await store.flush();
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].params, [['a', 'b'], [5, 0], [1, 0], [0, 1], [0, 1]]);
+    assert.deepEqual(calls[0].params, [['a', 'b'], [1, 1], [5, 0], [1, 0], [0, 1], [0, 1]]);
     assert.ok(!calls[0].text.includes("'a'"), 'values only ever travel as parameters');
     await store.flush();
     assert.equal(calls.length, 1, 'already saved');
@@ -1312,32 +1538,32 @@ describe('saving progress', () => {
 
   it('keeps what failed to save for the next batch, and never loses or doubles it', async () => {
     const { store, calls, control } = fake(true);
-    store.add('a', { dust: 5 });
+    store.add('a', 1, { dust: 5 });
     await store.flush();
-    assert.equal(store.unsaved('a')?.dust, 5, 'still held in memory');
-    store.add('a', { dust: 1 });
+    assert.equal(store.unsaved('a', 1)?.dust, 5, 'still held in memory');
+    store.add('a', 1, { dust: 1 });
     control.fail = false;
     await store.flush();
-    assert.deepEqual(calls[1].params[1], [6]);
-    assert.equal(store.unsaved('a'), undefined);
+    assert.deepEqual(calls[1].params[2], [6]);
+    assert.equal(store.unsaved('a', 1), undefined);
   });
 
   it('never rejects into the game loop when the database fails', async () => {
     const { store } = fake(true);
-    store.add('a', { dust: 1 });
+    store.add('a', 1, { dust: 1 });
     await store.flush();
     await store.flushUser('a');
     await store.settle();
-    assert.equal(store.unsaved('a')?.dust, 1);
+    assert.equal(store.unsaved('a', 1)?.dust, 1);
   });
 
   it('saves one player at once when they leave, without touching the others', async () => {
     const { store, calls } = fake();
-    store.add('a', { dust: 1 });
-    store.add('b', { dust: 2 });
+    store.add('a', 1, { dust: 1 });
+    store.add('b', 1, { dust: 2 });
     await store.flushUser('a');
     assert.deepEqual(calls[0].params[0], ['a']);
-    assert.equal(store.unsaved('b')?.dust, 2);
+    assert.equal(store.unsaved('b', 1)?.dust, 2);
   });
 
   it('doesn’t start a second batch while one is running', async () => {
@@ -1349,29 +1575,248 @@ describe('saving progress', () => {
         finish = () => resolve({ rows: [], rowCount: 1 });
       });
     });
-    store.add('a', { dust: 1 });
+    store.add('a', 1, { dust: 1 });
     const first = store.flush();
-    store.add('b', { dust: 1 });
+    store.add('b', 1, { dust: 1 });
     await store.flush();
     assert.equal(count, 1);
     finish();
     await first;
-    assert.equal(store.unsaved('b')?.dust, 1, 'picked up by the next one');
+    assert.equal(store.unsaved('b', 1)?.dust, 1, 'picked up by the next one');
   });
 
   it('reports a chest as new only if the database row was new', async () => {
     let rowCount = 1;
     const store = new ProgressStore(async () => ({ rows: [], rowCount }));
-    assert.equal(await store.openChest('a', 1, 40), true);
+    assert.equal(await store.openChest('a', 1, 1, 40), true);
     rowCount = 0;
-    assert.equal(await store.openChest('a', 1, 40), false);
+    assert.equal(await store.openChest('a', 1, 1, 40), false);
     assert.equal(await store.unlock('a', 'first_blood'), false);
+  });
+});
+
+describe('Binary Graces', () => {
+  const grace: MapGrace = { id: 7, x: OPEN.x, z: OPEN.z, name: 'Near Grace' };
+  const distant: MapGrace = { id: 8, x: OPEN.x + 70, z: OPEN.z, name: 'Distant Grace' };
+  /** Long enough for the checks the world only makes every so often to have run. */
+  const CHECK_TICKS = 40;
+
+  const flushPromises = () => new Promise((resolve) => setImmediate(resolve));
+
+  function refusals(staged: Staged, player: WorldPlayer): string[] {
+    return staged.sent.flatMap(({ player: to, message }) => (to === player && message.t === 'refused' ? [message.reason] : []));
+  }
+
+  /** Beside the grace, and sat down by pressing E like anyone else. */
+  function seated(staged: Staged, classId: ClassId = 'duelist', lit: number[] = [grace.id]): WorldPlayer {
+    const player = staged.join(classId, 0, [], lit);
+    staged.moveTo(player, 0, 2.5);
+    staged.world.queueInput(player, input({ interact: true }));
+    staged.tick();
+    assert.equal(player.state.resting, grace.id, 'should be sitting');
+    return player;
+  }
+
+  it('lights once when walked near, and only for the one who walked there', () => {
+    const staged = stage({ graces: [grace] });
+    const walker = staged.join('duelist');
+    staged.moveTo(walker, 0, GRACE_DISCOVER_RADIUS - 0.5);
+    const faraway = staged.join('ranger');
+    staged.moveTo(faraway, 0, GRACE_DISCOVER_RADIUS + 30);
+    staged.tick(CHECK_TICKS);
+    assert.deepEqual(staged.discovered, [grace.id], 'saved once, for one player');
+    assert.ok(walker.graces.has(grace.id));
+    assert.ok(!faraway.graces.has(grace.id));
+    assert.equal(staged.sent.filter(({ message }) => message.t === 'grace').length, 1);
+    assert.ok(staged.unlocks.includes('first_grace'));
+  });
+
+  it('refills everything and saves the way back, in separate seats, and stands up on moving', () => {
+    const staged = stage({ graces: [grace] });
+    const first = seated(staged);
+    first.state.health = 1;
+    first.state.potions = 0;
+    const second = seated(staged);
+    assert.equal(second.state.health, second.derived.maxHealth);
+    assert.deepEqual(staged.respawns, [grace.id, grace.id]);
+    assert.notEqual(first.seat, second.seat, 'no two people on one seat');
+    assert.ok(Math.hypot(first.state.x - second.state.x, first.state.z - second.state.z) > 1);
+
+    staged.world.queueInput(second, input({ mx: 0, mz: 1 }));
+    staged.tick();
+    assert.equal(second.state.resting, 0, 'moving stands you up');
+    assert.equal(first.state.resting, grace.id, 'and only you');
+  });
+
+  it('turns the next person away when every seat is taken', () => {
+    const staged = stage({ graces: [grace] });
+    for (let seat = 0; seat < GRACE_SEATS; seat += 1) seated(staged);
+    const late = staged.join('duelist', 0, [], [grace.id]);
+    staged.moveTo(late, 0, 2.5);
+    staged.world.queueInput(late, input({ interact: true }));
+    staged.tick();
+    assert.equal(late.state.resting, 0);
+    assert.deepEqual(refusals(staged, late), ['grace_full']);
+  });
+
+  it('won’t let you sit with a hunter awake nearby, and a hunter arriving interrupts', () => {
+    const staged = stage({ graces: [grace], camps: [{ kind: 'wolf', x: OPEN.x, z: OPEN.z + 40, count: 1, radius: 1 }] });
+    const player = seated(staged);
+    const wolf = staged.world.field.creatures[0];
+    staged.place(wolf, 0, 11);
+    wolf.mode = Mode.Chase;
+    staged.tick(CHECK_TICKS);
+    assert.equal(player.state.resting, 0, 'interrupted');
+    assert.deepEqual(refusals(staged, player), ['interrupted']);
+
+    staged.moveTo(player, 0, 2.5);
+    staged.place(wolf, 0, 11);
+    wolf.mode = Mode.Chase;
+    staged.world.queueInput(player, input({ interact: true }));
+    staged.tick();
+    assert.equal(player.state.resting, 0);
+    assert.ok(refusals(staged, player).includes('enemies_near'));
+  });
+
+  it('only raises a stat for someone resting, with enough dust, and under the cap', async () => {
+    const staged = stage({ graces: [grace] });
+    const standing = staged.join('duelist', 0, [], [grace.id]);
+    standing.dust = 10_000;
+    staged.world.handleAction(standing, { t: 'upgrade', stat: 'health' });
+    assert.deepEqual(refusals(staged, standing), ['not_resting']);
+
+    const poor = seated(staged);
+    poor.dust = upgradeCost(poor.info.level) - 1;
+    staged.world.handleAction(poor, { t: 'upgrade', stat: 'health' });
+    assert.deepEqual(refusals(staged, poor), ['no_dust']);
+
+    const capped = seated(staged);
+    capped.dust = 10_000;
+    capped.info = { ...capped.info, stats: { ...capped.info.stats, health: MAX_STAT } };
+    staged.world.handleAction(capped, { t: 'upgrade', stat: 'health' });
+    assert.deepEqual(refusals(staged, capped), ['stat_maxed']);
+
+    await flushPromises();
+    assert.deepEqual(staged.upgrades, [], 'none of these reached the database');
+  });
+
+  it('spends the server’s own price, once, and updates derived stats only after the database agrees', async () => {
+    const staged = stage({ graces: [grace] });
+    const player = seated(staged);
+    const cost = upgradeCost(player.info.level);
+    player.dust = cost * 2 + 3;
+    const healthBefore = player.info.stats.health;
+    const maxBefore = player.derived.maxHealth;
+
+    staged.world.handleAction(player, { t: 'upgrade', stat: 'health' });
+    // A second click while the first is on its way must not be a second purchase.
+    staged.world.handleAction(player, { t: 'upgrade', stat: 'health' });
+    assert.equal(player.info.stats.health, healthBefore, 'nothing changes until the database answers');
+    await flushPromises();
+
+    assert.deepEqual(staged.upgrades, [{ stat: 'health', cost }]);
+    assert.equal(player.dust, cost + 3);
+    assert.equal(player.info.stats.health, healthBefore + 1);
+    assert.equal(player.info.level, 2);
+    assert.ok(player.derived.maxHealth > maxBefore);
+    assert.equal(player.state.health, player.derived.maxHealth, 'still shown full while resting');
+    assert.ok(staged.unlocks.includes('first_upgrade'));
+    const shown = staged.sent.filter(({ message }) => message.t === 'info').length;
+    assert.ok(shown >= 1, 'other players hear about it');
+  });
+
+  it('changes nothing when the database says no or fails', async () => {
+    const staged = stage({ graces: [grace] });
+    const player = seated(staged);
+    player.dust = 1000;
+    staged.upgradeAnswer = async () => false;
+    staged.world.handleAction(player, { t: 'upgrade', stat: 'speed' });
+    await flushPromises();
+    staged.upgradeAnswer = async () => {
+      throw new Error('database down');
+    };
+    staged.world.handleAction(player, { t: 'upgrade', stat: 'speed' });
+    await flushPromises();
+    assert.equal(player.dust, 1000);
+    assert.equal(player.info.level, 1);
+    assert.deepEqual(refusals(staged, player), ['try_again', 'try_again']);
+  });
+
+  it('only travels from resting, and only to graces this save has lit', () => {
+    const staged = stage({ graces: [grace, distant] });
+    const standing = staged.join('duelist', 0, [], [grace.id, distant.id]);
+    staged.world.handleAction(standing, { t: 'travel', grace: distant.id });
+    assert.deepEqual(refusals(staged, standing), ['not_resting']);
+
+    const player = seated(staged);
+    const { x, z } = player.state;
+    staged.world.handleAction(player, { t: 'travel', grace: distant.id });
+    staged.world.handleAction(player, { t: 'travel', grace: 999 });
+    assert.deepEqual(refusals(staged, player), ['not_discovered', 'not_discovered']);
+    assert.deepEqual([player.state.x, player.state.z], [x, z], 'stayed put');
+    assert.equal(player.state.resting, grace.id);
+
+    player.graces.add(distant.id);
+    staged.world.handleAction(player, { t: 'travel', grace: distant.id });
+    assert.equal(player.state.resting, distant.id);
+    assert.ok(Math.hypot(player.state.x - distant.x, player.state.z - distant.z) < 5);
+    assert.deepEqual(staged.respawns.at(-1), distant.id);
+  });
+
+  it('reads nothing but the fixed fields from a request, and turns away anything else', () => {
+    const bad = [
+      'nonsense',
+      '[]',
+      'null',
+      '{}',
+      '{"t":"upgrade"}',
+      '{"t":"upgrade","stat":"__proto__"}',
+      '{"t":"upgrade","stat":"constructor"}',
+      '{"t":"upgrade","stat":["health"]}',
+      '{"t":"upgrade","stat":"HEALTH"}',
+      '{"t":"travel"}',
+      '{"t":"travel","grace":"1"}',
+      '{"t":"travel","grace":-1}',
+      '{"t":"travel","grace":0}',
+      '{"t":"travel","grace":1.5}',
+      '{"t":"travel","grace":1e400}',
+      '{"t":"rest"}',
+    ];
+    for (const text of bad) assert.equal(parseAction(text), null, text);
+    assert.equal(parseAction(7), null);
+    assert.deepEqual(parseAction('{"t":"upgrade","stat":"health","cost":0,"level":99}'), { t: 'upgrade', stat: 'health' });
+    assert.deepEqual(parseAction('{"t":"travel","grace":3,"x":0}'), { t: 'travel', grace: 3 });
+    assert.deepEqual(parseAction('{"t":"stand"}'), { t: 'stand' });
+    assert.deepEqual(parseAction('{"t":"aim","c":4,"x":0}'), { t: 'aim', c: 4 });
+    assert.deepEqual(parseAction('{"t":"aim","c":0}'), { t: 'aim', c: 0 });
+    for (const text of ['{"t":"aim"}', '{"t":"aim","c":-1}', '{"t":"aim","c":1.5}', '{"t":"aim","c":"3"}', '{"t":"aim","c":1e400}']) {
+      assert.equal(parseAction(text), null, text);
+    }
+  });
+
+  it('keeps unsaved dust apart for each save, and passes the slot to every query', async () => {
+    const calls: Array<{ params: unknown[] }> = [];
+    const store = new ProgressStore(async (_text, params) => {
+      calls.push({ params });
+      return { rows: [], rowCount: 1 };
+    });
+    store.add('a', 1, { dust: 5 });
+    store.add('a', 2, { dust: 7 });
+    assert.equal(store.unsaved('a', 1)?.dust, 5);
+    assert.equal(store.unsaved('a', 2)?.dust, 7);
+    assert.equal(store.unsaved('b', 1), undefined);
+    await store.flush();
+    calls.length = 0;
+    assert.equal(await store.upgradeStat('a', 2, 'health', 12, 1), true);
+    assert.deepEqual(calls.at(-1)?.params, ['a', 2, 12, 1, MAX_STAT]);
+    await store.discoverGrace('a', 3, 9);
+    assert.deepEqual(calls.at(-1)?.params, ['a', 3, 9]);
   });
 });
 
 describe('performance', () => {
   it('only adds load test creatures when asked with a sensible number', () => {
-    const base = { spawn: { x: 0, z: 0, radius: 1 }, camps: [{ kind: 'wolf', x: 0, z: 0, count: 2, radius: 1 }], chests: [], bonfires: [] };
+    const base = { spawn: { x: 0, z: 0, radius: 1 }, camps: [{ kind: 'wolf', x: 0, z: 0, count: 2, radius: 1 }], chests: [], graces: [] };
     const count = (config: typeof base) => config.camps.reduce((sum, camp) => sum + camp.count, 0);
     for (const unset of [0, 1, Number.NaN, 2000, 1.5, -5]) assert.equal(withLoadTestCreatures(base, unset), base, String(unset));
     assert.equal(count(withLoadTestCreatures(base, 200)), 200);

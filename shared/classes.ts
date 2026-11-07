@@ -2,6 +2,13 @@
 
 export const STAT_KEYS = ['strength', 'dexterity', 'arcane', 'speed', 'stamina', 'health'] as const;
 export type StatKey = (typeof STAT_KEYS)[number];
+/** No stat can be raised past this. */
+export const MAX_STAT = 40;
+
+export function isStatKey(value: unknown): value is StatKey {
+  return (STAT_KEYS as readonly unknown[]).includes(value);
+}
+
 export type Stats = Record<StatKey, number>;
 
 export const STAT_INFO: Record<StatKey, { label: string; effect: string }> = {

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP } from '../../../shared/mapData';
-import type { MapBonfire } from '../../../shared/mapTypes';
+import type { MapGrace } from '../../../shared/mapTypes';
 import { citadelPath, ridgePath, seededRandom, type Rgb } from '../scene/psx';
 import { skyAt, worldPhase } from '../scene/worldClock';
 import { ATLAS, type AtlasSprite } from './fx/atlas';
@@ -1309,7 +1309,7 @@ export interface WorldScene {
   setChestOpen: (id: number, open: boolean, animate: boolean) => void;
   chestPosition: (id: number) => { x: number; z: number } | null;
   nearestChest: (x: number, z: number) => WorldChest | null;
-  bonfires: readonly MapBonfire[];
+  graces: readonly MapGrace[];
 }
 
 export interface WorldOptions {
@@ -1745,7 +1745,7 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
       }
       return best;
     },
-    bonfires: withRocks ? MAP.bonfires : [],
+    graces: withRocks ? MAP.graces : [],
     dispose: () => {
       disposed = true;
       scene.onBeforeRender = () => {};

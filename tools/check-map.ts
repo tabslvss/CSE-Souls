@@ -5,6 +5,7 @@
  * Run: client/node_modules/.bin/esbuild tools/check-map.ts --bundle --platform=node --format=esm --outfile=/tmp/x.mjs && node /tmp/x.mjs
  */
 import { collide } from '../shared/collision.js';
+import { GRACE_SEATS, graceSeat } from '../shared/graces.js';
 import { MAP } from '../shared/mapData.js';
 import { PLAYER_RADIUS } from '../shared/sim.js';
 
@@ -71,7 +72,11 @@ interface Spot {
 const spots: Spot[] = [
   { name: 'spawn', x: MAP.spawn.x, z: MAP.spawn.z },
   ...MAP.chests.map((chest) => ({ name: `chest ${chest.id}`, x: chest.x, z: chest.z })),
-  ...MAP.bonfires.map((bonfire) => ({ name: `bonfire ${bonfire.id}`, x: bonfire.x, z: bonfire.z })),
+  ...MAP.graces.map((grace) => ({ name: `grace ${grace.id}`, x: grace.x, z: grace.z })),
+  // Every seat must be open, or a resting player would be pushed out of the circle.
+  ...MAP.graces.flatMap((grace) =>
+    Array.from({ length: GRACE_SEATS }, (_, seat) => ({ name: `grace ${grace.id} seat ${seat}`, ...graceSeat(grace, seat) })),
+  ),
   ...MAP.camps.map((camp, index) => ({ name: `camp ${index} ${camp.kind}`, x: camp.x, z: camp.z })),
 ];
 // Spawn points scatter across this circle, so the whole of it must be open.

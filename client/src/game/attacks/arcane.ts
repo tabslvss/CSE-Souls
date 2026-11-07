@@ -2,8 +2,7 @@ import type { Attack, ItemPose, Pose, Vec3, WeaponMoves } from './types';
 
 /*
  * The arcanist's three weapons. The list order matches shared/combat.ts. Hit times: all three land at 0.5.
- * Lengths: staff 0.9 s, wand 0.55 s, quarterstaff 0.8 s, so a strike of 2 to 4 frames at 30 fps is about
- * 0.09 to 0.15 of the staves' attacks, and 0.12 to 0.2 of the wand's.
+ * Lengths: staff 1.5 s, wand 0.55 s, quarterstaff 0.8 s. The staff is a long cast, so its keys play slowly.
  *
  * Edges follow the head: seen from the side, the edge points 90 degrees ahead of the head in the direction
  * of travel, so that the knuckles lead the swing. A planted foot stays where it is: a foot only moves on keys

@@ -32,6 +32,8 @@ export interface GameSoundOptions {
   duck?: number;
   /** Seconds to wait, for layered sounds. */
   delay?: number;
+  /** Plays it slower and lower than recorded: 0.5 is an octave down. */
+  pitch?: number;
 }
 
 export interface HitComboOptions {
@@ -100,6 +102,7 @@ const GAME_SFX = {
 const GAME_PRELOAD: readonly GameSfxName[] = [
   'swing-light', 'swing-heavy', 'hit-flesh', 'hit-heavy', 'hit-metal', 'kill-sting', 'kill-thud', 'dodge-roll', 'footstep-dirt',
   'dust-collect', 'magic-impact', 'cast-magic', 'arrow-hit', 'bow-release', 'hit-player', 'potion-drink', 'respawn',
+  'wind-heavy', 'binary-glitch',
 ];
 
 const MAX_VOICES = 24;
@@ -251,7 +254,7 @@ class SoundEngine {
     const level = entry.gain * positional * (options.volume ?? 1);
     if (level <= 0.002) return;
     const variance = options.pitchVariance ?? entry.pitch;
-    const rate = 1 + (Math.random() * 2 - 1) * variance;
+    const rate = (options.pitch ?? 1) * (1 + (Math.random() * 2 - 1) * variance);
     const requested = performance.now();
 
     this.voices += 1;
@@ -312,6 +315,39 @@ class SoundEngine {
       this.playGame('kill-thud', { ...at, duck: heavy ? 1 : 0.8 });
       this.playGame('kill-sting', { ...at, delay: 0.03 });
     }
+  }
+
+  /*
+   * The big spells have no recordings of their own. They layer existing sounds slowed well down, which
+   * lowers them and stretches them at once. Nobody has listened to these yet, so the levels are a first guess.
+   */
+
+  /** A spell leaving the weapon. Bigger spells are lower and thicker. */
+  spellCast(kind: 'bolt' | 'crescent' | 'meteor', at: GameSoundOptions = {}): void {
+    if (kind === 'bolt') {
+      this.playGame('cast-magic', { ...at, pitch: 1.12 });
+    } else if (kind === 'crescent') {
+      this.playGame('cast-magic', { ...at, pitch: 0.85 });
+      this.playGame('swing-heavy', { ...at, pitch: 0.85, volume: 0.55 });
+    } else {
+      this.playGame('cast-magic', { ...at, pitch: 0.6 });
+      this.playGame('swing-heavy', { ...at, pitch: 0.5, volume: 0.8, delay: 0.03 });
+      this.playGame('binary-glitch', { ...at, pitch: 0.7, volume: 0.25, delay: 0.08 });
+    }
+  }
+
+  /** A long rush of air that peaks as the meteor lands in the given number of seconds. */
+  meteorFalling(at: GameSoundOptions, seconds: number): void {
+    this.playGame('wind-heavy', { ...at, pitch: 0.62, delay: Math.max(0, seconds - 0.9) });
+  }
+
+  /** The largest sound in the game: a slowed thud under a slowed blast, with the music ducked out of its way. */
+  meteorImpact(at: GameSoundOptions): void {
+    this.playGame('kill-thud', { ...at, pitch: 0.62, duck: 1 });
+    this.playGame('hit-heavy', { ...at, pitch: 0.7, volume: 0.9 });
+    this.playGame('magic-impact', { ...at, pitch: 0.55 });
+    this.playGame('kill-sting', { ...at, pitch: 0.5, volume: 0.35, delay: 0.06 });
+    this.playGame('binary-glitch', { ...at, pitch: 0.6, volume: 0.3, delay: 0.1 });
   }
 
   /** A swing leaving the hand, picked by weapon style. */

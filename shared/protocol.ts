@@ -1,5 +1,5 @@
 /** Messages sent over the game's WebSocket. */
-import type { Appearance, ClassId, Stats } from './classes.js';
+import type { Appearance, ClassId, StatKey, Stats } from './classes.js';
 import type { SimState } from './sim.js';
 
 export interface PlayerInfo {
@@ -15,7 +15,7 @@ export interface PlayerInfo {
 /**
  * One player inside a snapshot, as a compact array:
  * id, x, z, yaw, stamina, moving, dodgeTime, attackTime, attackCount, dodgeX, dodgeZ, regenDelay,
- * health, magic, staggerTime, knockX, knockZ, deadTime, potions, drinkTime, jumpTime
+ * health, magic, staggerTime, knockX, knockZ, deadTime, potions, drinkTime, jumpTime, resting
  */
 export type PlayerSnapshot = [
   id: number,
@@ -39,6 +39,7 @@ export type PlayerSnapshot = [
   potions: number,
   drinkTime: number,
   jumpTime: number,
+  resting: number,
 ];
 
 function round(value: number): number {
@@ -69,13 +70,14 @@ export function packSnapshot(id: number, s: SimState): PlayerSnapshot {
     s.potions,
     round(s.drinkTime),
     round(s.jumpTime),
+    s.resting,
   ];
 }
 
 export function applySnapshot(entry: PlayerSnapshot, state: SimState): void {
   [, state.x, state.z, state.yaw, state.stamina, state.moving, state.dodgeTime, state.attackTime, state.attackCount,
     state.dodgeX, state.dodgeZ, state.regenDelay, state.health, state.magic, state.staggerTime, state.knockX,
-    state.knockZ, state.deadTime, state.potions, state.drinkTime, state.jumpTime] = entry;
+    state.knockZ, state.deadTime, state.potions, state.drinkTime, state.jumpTime, state.resting] = entry;
 }
 
 /** One creature inside a snapshot: id, kind (index into CREATURES), x, z, yaw, state (CreatureState), health percent. */
@@ -95,15 +97,49 @@ export type GameEvent =
   | { k: 'swing'; by: number; x: number; z: number; yaw: number; style: StyleIndex }
   /** A creature bit a player. */
   | { k: 'bite'; c: number; v: number; x: number; z: number; dmg: number }
-  /** A projectile set off. The browser moves it on its own until the matching 'shotEnd'. */
-  | { k: 'shot'; id: number; by: number; x: number; z: number; yaw: number; speed: number; range: number; style: StyleIndex }
+  /**
+   * A projectile set off. The browser moves it on its own until the matching 'shotEnd'. form is left
+   * out of a plain arrow. target is a creature id, or 0 for none, and turn is radians per second:
+   * together they let the browser curve a homing bolt the way the server does. width is a crescent's.
+   */
+  | {
+      k: 'shot';
+      id: number;
+      by: number;
+      x: number;
+      z: number;
+      yaw: number;
+      speed: number;
+      range: number;
+      style: StyleIndex;
+      form?: 'homing' | 'crescent';
+      target?: number;
+      turn?: number;
+      width?: number;
+    }
   /** A projectile hit something, or fizzled out if hit is 0. splash is its area in meters. */
   | { k: 'shotEnd'; id: number; x: number; z: number; hit: 0 | 1; splash: number; style: StyleIndex }
+  /** A meteor was called down on this spot and lands in delay seconds. radius is its area in meters. */
+  | { k: 'meteor'; id: number; by: number; x: number; z: number; delay: number; radius: number; style: StyleIndex }
+  /** A meteor landed. Each creature it damaged gets its own 'hit'. */
+  | { k: 'meteorEnd'; id: number; by: number; x: number; z: number; radius: number; style: StyleIndex }
   /** Red Binary Dust bursts out of a corpse and flies to the player who earned it. */
   | { k: 'dust'; x: number; z: number; n: number; to: number }
   | { k: 'death'; v: number }
   | { k: 'respawn'; v: number }
   | { k: 'drink'; v: number };
+
+/** Why the server said no to something. Only ever one of these fixed words, which the browser turns into text. */
+export type RefusalReason =
+  | 'enemies_near'
+  | 'interrupted'
+  | 'grace_full'
+  | 'not_resting'
+  | 'too_far'
+  | 'no_dust'
+  | 'stat_maxed'
+  | 'not_discovered'
+  | 'try_again';
 
 export type ServerMessage =
   | {
@@ -112,8 +148,10 @@ export type ServerMessage =
       players: PlayerInfo[];
       snapshot: PlayerSnapshot[];
       binaryDust: number;
-      /** Chest ids this account has already opened. */
+      /** Chest ids this save has already opened. */
       chests: number[];
+      /** Binary Grace ids this save has already lit. */
+      graces: number[];
       mapVersion: number;
     }
   | { t: 'join'; player: PlayerInfo }
@@ -124,16 +162,33 @@ export type ServerMessage =
   | { t: 'self'; dust: number; kills: number }
   /** You opened a chest. Other players still see it closed. */
   | { t: 'chest'; id: number; dust: number; potion: 0 | 1 }
+  /** You lit a Binary Grace for the first time on this save. */
+  | { t: 'grace'; id: number }
+  /** A player's public details changed, as when they raise a stat. */
+  | { t: 'info'; player: PlayerInfo }
+  /** The stat you asked for went up. */
+  | { t: 'upgraded'; stat: StatKey }
+  /** The server said no, or stopped you resting. */
+  | { t: 'refused'; reason: RefusalReason }
   /** An achievement was earned. */
   | { t: 'unlock'; achievement: string }
   /** The account has no character yet. */
   | { t: 'no_character' };
 
-export type ClientMessage = {
-  t: 'i';
-  /** seq, mx, mz, yaw, flags */
-  d: [number, number, number, number, number];
-};
+export type ClientMessage =
+  | {
+      t: 'i';
+      /** seq, mx, mz, yaw, flags */
+      d: [number, number, number, number, number];
+    }
+  /** Asks to raise one stat by one. The server works out the cost for itself. */
+  | { t: 'upgrade'; stat: StatKey }
+  /** Asks to travel to a grace you have lit. */
+  | { t: 'travel'; grace: number }
+  /** Stand up from resting. */
+  | { t: 'stand' }
+  /** Which creature you're locked on to, or 0. A preference only: the server checks it each time you cast. */
+  | { t: 'aim'; c: number };
 
 export const FLAG_RUN = 1;
 export const FLAG_DODGE = 2;

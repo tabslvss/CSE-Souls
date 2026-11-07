@@ -34,9 +34,9 @@ const GUARD_FEET = {
   toeR: 0.6,
 } as const;
 
-/** Middle guard: hands by the right hip and clear of it, the point up and forward at the opponent's throat. */
+/** Middle guard: hands out in front of the belt, far enough to keep the left elbow out of the torso, the point up and forward at the opponent's throat. */
 const ZWEIHANDER_GUARD: Pose = {
-  grip: [0.14, -0.12, 0.38],
+  grip: [0.06, -0.04, 0.52],
   head: [-0.14, 0.45, 0.88],
   edge: [0.02, -0.88, 0.45],
   ...GUARD_BODY,
@@ -45,7 +45,7 @@ const ZWEIHANDER_GUARD: Pose = {
 
 /** Keeps the trained guard on the move: sat down into the hips and leaning in. The hands stay up at the belt, because the legs swing right where a lower pommel would be. */
 const ZWEIHANDER_WALK: Pose = {
-  grip: [0.17, -0.1, 0.32],
+  grip: [0.08, -0.02, 0.5],
   head: [-0.1, 0.66, 0.75],
   edge: [0.02, -0.75, 0.66],
   turn: 0.3,
@@ -71,7 +71,7 @@ const HIGH_RIGHT_TO_LOW_LEFT: AttackKey[] = [
   {
     at: 0.07,
     ease: 'easeIn',
-    grip: [0.17, -0.06, 0.32],
+    grip: [0.13, -0.04, 0.45],
     head: [-0.09, 0.6, 0.79],
     edge: [0.08, -0.75, 0.6],
     turn: 0.45,
@@ -82,7 +82,7 @@ const HIGH_RIGHT_TO_LOW_LEFT: AttackKey[] = [
   {
     at: 0.17,
     ease: 'linear',
-    grip: [0.23, 0.06, 0.22],
+    grip: [0.23, 0.06, 0.34],
     head: [0, 0.85, 0.5],
     edge: [0.2, -0.5, 0.85],
     turn: 0.68,
@@ -94,7 +94,7 @@ const HIGH_RIGHT_TO_LOW_LEFT: AttackKey[] = [
   {
     at: 0.26,
     ease: 'linear',
-    grip: [0.3, 0.22, 0.08],
+    grip: [0.3, 0.22, 0.2],
     head: [0.17, 0.93, 0.1],
     edge: [0.32, -0.15, 0.93],
     turn: 0.95,
@@ -105,7 +105,7 @@ const HIGH_RIGHT_TO_LOW_LEFT: AttackKey[] = [
   {
     at: 0.305,
     ease: 'linear',
-    grip: [0.33, 0.31, 0.01],
+    grip: [0.33, 0.31, 0.13],
     head: [0.3, 0.89, -0.28],
     edge: [0.38, 0.12, 0.9],
     turn: 1.06,
@@ -117,7 +117,7 @@ const HIGH_RIGHT_TO_LOW_LEFT: AttackKey[] = [
   {
     at: 0.335,
     ease: 'linear',
-    grip: [0.34, 0.34, -0.02],
+    grip: [0.34, 0.34, 0.1],
     head: [0.35, 0.85, -0.4],
     edge: [0.4, 0.2, 0.88],
     turn: 1.1,
@@ -131,7 +131,7 @@ const HIGH_RIGHT_TO_LOW_LEFT: AttackKey[] = [
   {
     at: 0.375,
     ease: 'linear',
-    grip: [0.35, 0.35, -0.03],
+    grip: [0.35, 0.35, 0.09],
     head: [0.36, 0.84, -0.42],
     edge: [0.4, 0.22, 0.87],
     turn: 1.12,
@@ -143,7 +143,7 @@ const HIGH_RIGHT_TO_LOW_LEFT: AttackKey[] = [
   {
     at: 0.42,
     ease: 'easeIn',
-    grip: [0.33, 0.33, 0.1],
+    grip: [0.33, 0.33, 0.2],
     head: [0.5, 0.84, -0.2],
     edge: [0.15, 0.2, 0.95],
     turn: 1.0,
@@ -314,7 +314,7 @@ const RISING_RETURN: AttackKey[] = [
   // Coiled to the left: the point sweeps back behind the left hip, so that the cut has somewhere to come from.
   {
     at: 0.3,
-    grip: [-0.34, -0.25, 0.12],
+    grip: [-0.34, -0.25, 0.3],
     head: [-0.75, -0.12, -0.6],
     edge: [-0.3, -0.9, 0.3],
     turn: -1.25,
@@ -328,7 +328,7 @@ const RISING_RETURN: AttackKey[] = [
   {
     at: 0.345,
     ease: 'linear',
-    grip: [-0.34, -0.28, 0.14],
+    grip: [-0.34, -0.28, 0.3],
     head: [-0.78, -0.12, -0.55],
     edge: [-0.3, -0.9, 0.3],
     turn: -1.27,
@@ -341,7 +341,7 @@ const RISING_RETURN: AttackKey[] = [
   {
     at: 0.41,
     ease: 'easeIn',
-    grip: [-0.3, -0.34, 0.3],
+    grip: [-0.3, -0.34, 0.33],
     head: [-0.92, -0.1, -0.05],
     edge: [-0.2, -0.95, 0.2],
     turn: -1.0,
@@ -509,7 +509,7 @@ const LUNGING_THRUST: AttackKey[] = [
   {
     at: 0.13,
     ease: 'easeIn',
-    grip: [0.27, 0, 0.25],
+    grip: [0.27, 0, 0.37],
     head: [0.32, 0.87, 0.2],
     edge: [-0.3, -0.1, 0.95],
     turn: 0.82,
@@ -521,7 +521,7 @@ const LUNGING_THRUST: AttackKey[] = [
   {
     at: 0.24,
     ease: 'linear',
-    grip: [0.28, -0.03, 0.25],
+    grip: [0.28, -0.03, 0.37],
     head: [-0.05, 0.6, 0.8],
     edge: [0, -0.8, 0.6],
     turn: 0.92,
@@ -532,7 +532,7 @@ const LUNGING_THRUST: AttackKey[] = [
   {
     at: 0.31,
     ease: 'linear',
-    grip: [0.3, -0.1, 0.25],
+    grip: [0.3, -0.1, 0.37],
     head: [-0.08, 0.35, 0.93],
     edge: [0, -0.93, 0.35],
     turn: 1,
@@ -543,7 +543,7 @@ const LUNGING_THRUST: AttackKey[] = [
   {
     at: 0.375,
     ease: 'easeOut',
-    grip: [0.25, 0, 0.13],
+    grip: [0.25, 0, 0.25],
     head: [-0.1, 0.1, 1],
     edge: [0.05, -1, 0.1],
     turn: 1.05,
@@ -558,7 +558,7 @@ const LUNGING_THRUST: AttackKey[] = [
   {
     at: 0.4,
     ease: 'linear',
-    grip: [0.26, 0, 0.12],
+    grip: [0.26, 0, 0.24],
     head: [-0.1, 0.1, 1],
     edge: [0.05, -1, 0.1],
     turn: 1.08,
@@ -569,7 +569,7 @@ const LUNGING_THRUST: AttackKey[] = [
   {
     at: 0.43,
     ease: 'linear',
-    grip: [0.27, -0.01, 0.13],
+    grip: [0.27, -0.01, 0.25],
     head: [-0.12, 0.1, 1],
     edge: [0, -1, 0.1],
     turn: 1.05,
@@ -583,7 +583,7 @@ const LUNGING_THRUST: AttackKey[] = [
   {
     at: 0.465,
     ease: 'linear',
-    grip: [0.27, -0.05, 0.22],
+    grip: [0.27, -0.05, 0.3],
     head: [-0.17, 0.09, 0.98],
     edge: [-0.05, -1, 0.09],
     turn: 0.72,

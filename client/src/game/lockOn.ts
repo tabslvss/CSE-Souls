@@ -83,6 +83,11 @@ export class LockOn {
     return this.targetId !== null;
   }
 
+  /** The id of the creature locked on to, or 0. */
+  get targetCreature(): number {
+    return this.targetId ?? 0;
+  }
+
   /** Where the target's chest is, or null with no target. */
   get aim(): THREE.Vector3 | null {
     return this.targetId === null ? null : this.chest;

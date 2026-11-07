@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { parseSlot } from '../../../shared/graces';
 import {
   APPEARANCE_LIMITS,
   CLASSES,
@@ -77,6 +78,9 @@ function OptionRow({
 
 export default function CreatePage() {
   const navigate = useNavigate();
+  const [search] = useSearchParams();
+  // A new character from the grace menu names its save. The server checks this again.
+  const slot = parseSlot(Number(search.get('slot'))) ?? undefined;
   const { user, refresh } = useSession();
   const stage = useRef<StageHandle>(null);
   const [step, setStep] = useState<Step>('class');
@@ -88,7 +92,7 @@ export default function CreatePage() {
 
   // Coming back to edit starts from what the player already has.
   useEffect(() => {
-    api.character().then(
+    api.character(slot).then(
       ({ character }) => {
         if (character) {
           setClassId(character.classId as ClassId);
@@ -98,7 +102,7 @@ export default function CreatePage() {
       },
       () => undefined,
     );
-  }, []);
+  }, [slot]);
 
   const definition = findClass(classId)!;
 
@@ -112,7 +116,7 @@ export default function CreatePage() {
     setSaving(true);
     setError(null);
     try {
-      await api.saveCharacter(classId, appearance);
+      await api.saveCharacter(classId, appearance, slot);
       await refresh();
       sound.play('gate');
       navigate('/play');

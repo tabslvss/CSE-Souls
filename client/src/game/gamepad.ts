@@ -3,7 +3,7 @@ import { padFamily, getInputDevice, setInputDevice } from './inputDevice';
 /**
  * Controller support, using Elden Ring's default layout as far as this game has the same actions:
  * R1/RB attack, R3 lock on, Circle/B roll (tap) and run (hold), Cross/A jump, Square/X use potion,
- * Triangle/Y interact, Options/Menu pause. Source: https://eldenring.wiki.gg/wiki/Controls
+ * Triangle/Y interact, Options/Menu pause, and the small button beside it opens the map. Source: https://eldenring.wiki.gg/wiki/Controls
  * Every other button is left unassigned on purpose.
  */
 
@@ -14,6 +14,7 @@ const BUTTON = {
   square: 2,
   triangle: 3,
   r1: 5,
+  share: 8,
   options: 9,
   r3: 11,
   up: 12,
@@ -34,7 +35,7 @@ const MENU_STICK = 0.6;
 const MENU_FIRST_REPEAT = 0.4;
 const MENU_REPEAT = 0.18;
 
-export type PadAction = 'attack' | 'lock' | 'roll' | 'jump' | 'potion' | 'interact' | 'pause';
+export type PadAction = 'attack' | 'lock' | 'roll' | 'jump' | 'potion' | 'interact' | 'map' | 'pause';
 export type MenuNav = 'up' | 'down' | 'confirm' | 'back';
 
 export interface PadEvents {
@@ -167,6 +168,7 @@ export class GamepadInput {
     if (this.pressed(pad, BUTTON.cross)) this.events.onAction('jump');
     if (this.pressed(pad, BUTTON.square)) this.events.onAction('potion');
     if (this.pressed(pad, BUTTON.triangle)) this.events.onAction('interact');
+    if (this.pressed(pad, BUTTON.share)) this.events.onAction('map');
 
     // Roll on letting go, as only then is it clear this wasn't the start of a run.
     if (this.pressed(pad, BUTTON.circle)) {

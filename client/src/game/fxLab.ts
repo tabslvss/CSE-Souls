@@ -82,13 +82,13 @@ const swing = (style: string, seconds = 0.26) => {
 
 /** Bolts fly out of the character and end on their own, as the server's message would end them. */
 let boltId = 100;
-const pendingEnds: { id: number; at: number; hit: boolean; splash: number; endX: number }[] = [];
+const pendingEnds: { id: number; at: number; hit: boolean; style: string; endX: number }[] = [];
 let clock = 0;
-const shoot = (style: string, speed: number, range: number, splash: number, hit = true) => {
+const shoot = (style: string, speed: number, range: number, hit = true) => {
   boltId += 1;
   const start = { x: -1.6, y: 1.25, z: 0 };
   fx.spawnProjectile(boltId, start, Math.PI / 2, speed, range, style as never);
-  pendingEnds.push({ id: boltId, at: clock + range / speed, hit, splash, endX: start.x + range });
+  pendingEnds.push({ id: boltId, at: clock + range / speed, hit, style, endX: start.x + range });
 };
 
 const collector = () => FEET;
@@ -110,9 +110,9 @@ const EFFECTS: Record<string, () => void> = {
   'trail-magic': () => swing('magic'),
   'trail-heavy': () => swing('heavy', 0.36),
   wind: () => { fx.wind({ x: 0.9, y: 0, z: 0 }, Math.PI / 2, 1.2); psx.vhs.glitch(0.3); },
-  'bolt-staff': () => shoot('magic', 16, 4, 1.8),
-  'bolt-wand': () => shoot('magic', 22, 4, 0),
-  arrow: () => shoot('arrow', 34, 4, 0),
+  'bolt-staff': () => fx.arcane.meteorCast(++boltId, 3, 0, 1.1, 2.5, 0, 0),
+  'bolt-wand': () => shoot('magic', 22, 4),
+  arrow: () => shoot('arrow', 34, 4),
   cast: () => fx.castMagic({ x: 0.45, y: 1.15, z: 0 }, 'magic'),
   'dust-burst': () => fx.dustBurst({ x: 3, y: 0.9, z: 0 }, 40, collector, () => undefined),
   'foot-walk': () => fx.footDust(FEET, 'walk'),
@@ -173,7 +173,7 @@ function step(seconds: number): void {
   for (let i = pendingEnds.length - 1; i >= 0; i -= 1) {
     const end = pendingEnds[i];
     if (end.at <= clock) {
-      fx.endProjectile(end.id, { x: end.endX, y: 1.25, z: 0 }, end.hit, end.splash);
+      fx.endProjectile(end.id, { x: end.endX, y: 1.25, z: 0 }, end.hit, end.style as never);
       pendingEnds.splice(i, 1);
     }
   }

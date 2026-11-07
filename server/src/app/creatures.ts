@@ -4,7 +4,7 @@
  * asleep and costs almost nothing. docs/GAME_PLAN.md section 3 has the states this follows.
  */
 import { collide, segmentBlocked } from '../../../shared/collision.js';
-import type { MapBonfire, MapCamp } from '../../../shared/mapTypes.js';
+import type { MapCamp, MapGrace } from '../../../shared/mapTypes.js';
 import {
   CORPSE_SECONDS,
   CREATURE_BY_ID,
@@ -61,8 +61,8 @@ const WANDER_PAUSE_MAX = 6;
 const STUCK_CHECK_SECONDS = 1;
 const STUCK_MIN_PROGRESS = 0.5;
 const STUCK_LIMIT = 3;
-/** Enemies keep out of this circle around a bonfire. */
-const BONFIRE_WARD = 10;
+/** Enemies keep out of this circle around a Binary Grace. */
+const GRACE_WARD = 10;
 // shared/collision.ts only promises to find colliders for circles up to this wide.
 const LARGEST_COLLISION_RADIUS = 1;
 
@@ -168,7 +168,7 @@ export class CreatureField {
 
   constructor(
     camps: readonly MapCamp[],
-    private bonfires: readonly MapBonfire[],
+    private graces: readonly MapGrace[],
     private host: CreatureHost,
   ) {
     let nextId = 1;
@@ -197,27 +197,38 @@ export class CreatureField {
     c.checkZ = c.z;
   }
 
-  /** Slides along whatever it walked into, and out of a bonfire's circle. */
+  /** Slides along whatever it walked into, and out of a grace's circle. */
   private settle(c: Creature): void {
     collide(c, Math.min(c.kind.radius, LARGEST_COLLISION_RADIUS));
     if (c.kind.behavior !== 'hunter') return;
-    for (const bonfire of this.bonfires) {
-      const dx = c.x - bonfire.x;
-      const dz = c.z - bonfire.z;
+    for (const grace of this.graces) {
+      const dx = c.x - grace.x;
+      const dz = c.z - grace.z;
       const squared = dx * dx + dz * dz;
-      if (squared >= BONFIRE_WARD * BONFIRE_WARD) continue;
+      if (squared >= GRACE_WARD * GRACE_WARD) continue;
       const distance = Math.sqrt(squared) || 1;
-      c.x = bonfire.x + (dx / distance) * BONFIRE_WARD;
-      c.z = bonfire.z + (dz / distance) * BONFIRE_WARD;
+      c.x = grace.x + (dx / distance) * GRACE_WARD;
+      c.z = grace.z + (dz / distance) * GRACE_WARD;
       collide(c, Math.min(c.kind.radius, LARGEST_COLLISION_RADIUS));
     }
   }
 
   private isWarded(state: SimState): boolean {
-    for (const bonfire of this.bonfires) {
-      const dx = state.x - bonfire.x;
-      const dz = state.z - bonfire.z;
-      if (dx * dx + dz * dz < BONFIRE_WARD * BONFIRE_WARD) return true;
+    for (const grace of this.graces) {
+      const dx = state.x - grace.x;
+      const dz = state.z - grace.z;
+      if (dx * dx + dz * dz < GRACE_WARD * GRACE_WARD) return true;
+    }
+    return false;
+  }
+
+  /** True if a hunter that's awake is this close. A sleeping one hasn't noticed anyone, so it doesn't count. */
+  huntersNear(x: number, z: number, radius: number): boolean {
+    for (const c of this.creatures) {
+      if (!c.alive || c.kind.behavior !== 'hunter' || c.mode === Mode.Sleep) continue;
+      const dx = c.x - x;
+      const dz = c.z - z;
+      if (dx * dx + dz * dz <= radius * radius) return true;
     }
     return false;
   }

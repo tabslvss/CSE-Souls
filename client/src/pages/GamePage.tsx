@@ -1,12 +1,14 @@
 import { artUrl } from '../art';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { GameClient, type HudState } from '../game/GameClient';
 import type { ConnectionStatus } from '../game/net';
 import { BinaryDust } from '../components/BinaryDust';
 import { controlsFor } from '../components/Hud';
+import { GraceMenu } from '../components/GraceMenu';
 import { Icon } from '../components/Icon';
 import { ActionGlyph, useInputDevice } from '../components/InputGlyph';
+import { WorldMap, WorldMapLegend } from '../components/WorldMap';
 import { useSession } from '../session';
 
 const STATUS_MESSAGE: Partial<Record<ConnectionStatus, string>> = {
@@ -50,6 +52,46 @@ export function GamePage() {
   const [notice, setNotice] = useState<{ key: number; text: string } | null>(null);
   const [vhsOn, setVhsOn] = useState(true);
   const [reduceShake, setReduceShake] = useState(false);
+  /** The grace you're sitting at, by the server's word, or 0. */
+  const [graceId, setGraceId] = useState(0);
+  const [mapOpen, setMapOpen] = useState(false);
+  // The game's callbacks live as long as the game does, so they read these and not the state above.
+  const graceRef = useRef(0);
+  const mapRef = useRef(false);
+  const graceElement = useRef<HTMLDivElement>(null);
+  const mapElement = useRef<HTMLDivElement>(null);
+  const graceBack = useRef<(() => boolean) | null>(null);
+
+  const showMap = useCallback((open: boolean) => {
+    mapRef.current = open;
+    setMapOpen(open);
+  }, []);
+
+  const showGrace = useCallback((grace: number) => {
+    graceRef.current = grace;
+    setGraceId(grace);
+  }, []);
+
+  /** The map closes back to the grace menu if you're sitting, and otherwise back to the game. */
+  const toggleMap = useCallback(() => {
+    const client = clientRef.current;
+    if (!client) return;
+    if (mapRef.current) {
+      showMap(false);
+      if (graceRef.current === 0) client.closeOverlay(true);
+    } else {
+      showMap(true);
+      client.openOverlay();
+    }
+  }, [showMap]);
+
+  const standUp = useCallback(() => {
+    const client = clientRef.current;
+    if (!client) return;
+    client.standUp();
+    showGrace(0);
+    client.closeOverlay(true);
+  }, [showGrace]);
 
   const hasCharacter = !!user?.hasCharacter;
 
@@ -68,6 +110,12 @@ export function GamePage() {
           return;
         }
         setStatus(next);
+        // Whatever these were showing is gone, and a reconnect starts standing in a new world state.
+        if (next !== 'open') {
+          showGrace(0);
+          showMap(false);
+          clientRef.current?.closeOverlay(false);
+        }
         // If the login has run out, this clears it and the page sends the player to log in.
         if (next === 'lost' || next === 'expired') void refresh();
       },
@@ -90,11 +138,33 @@ export function GamePage() {
         setNotice({ key: performance.now(), text });
         noticeTimer = window.setTimeout(() => setNotice(null), NOTICE_MS);
       },
+      onRest: (grace) => {
+        showGrace(grace);
+        if (grace > 0) clientRef.current?.openOverlay();
+        else if (!mapRef.current) clientRef.current?.closeOverlay(true);
+      },
+      onMapKey: toggleMap,
       onMenu: (nav) => {
-        const card = menuRef.current;
+        const overlay = mapRef.current ? mapElement.current : graceRef.current > 0 ? graceElement.current : null;
+        const card = overlay ?? menuRef.current;
         if (!card) return;
-        const items = [...card.querySelectorAll<HTMLElement>('button, a[href], input')];
+        const items = [...card.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input')];
         const current = items.indexOf(document.activeElement as HTMLElement);
+        if (overlay) {
+          if (nav === 'back') {
+            if (mapRef.current) toggleMap();
+            else if (!graceBack.current?.()) standUp();
+          } else if (nav === 'confirm') {
+            if (current >= 0) items[current].click();
+            else items[0]?.focus();
+          } else {
+            const step = nav === 'down' ? 1 : -1;
+            const target = items[current < 0 ? 0 : (current + step + items.length) % items.length];
+            target?.focus();
+            target?.scrollIntoView({ block: 'nearest' });
+          }
+          return;
+        }
         if (nav === 'up' || nav === 'down') {
           const step = nav === 'down' ? 1 : -1;
           items[current < 0 ? 0 : (current + step + items.length) % items.length]?.focus();
@@ -115,10 +185,16 @@ export function GamePage() {
       clientRef.current = null;
       client.dispose();
     };
-  }, [hasCharacter, navigate, refresh]);
+  }, [hasCharacter, navigate, refresh, showGrace, showMap, standUp, toggleMap]);
+
+  // Only the first time it opens: the map has one button, and a controller needs it to have focus.
+  useEffect(() => {
+    if (mapOpen) mapElement.current?.querySelector('button')?.focus();
+  }, [mapOpen]);
 
   const message = STATUS_MESSAGE[status];
   const dead = !!hud && hud.deadSeconds > 0;
+  const mapView = useCallback(() => clientRef.current?.mapView() ?? { me: null, others: [] }, []);
 
   return (
     <div className="game">
@@ -172,11 +248,39 @@ export function GamePage() {
       {dead && (
         <div className="game__death" role="status">
           <strong>Fallen</strong>
-          <small>Back at the nearest bonfire in {Math.max(1, Math.ceil(hud.deadSeconds))}</small>
+          <small>Back at your Binary Grace in {Math.max(1, Math.ceil(hud.deadSeconds))}</small>
         </div>
       )}
 
-      {!locked && status === 'open' && (
+      {graceId > 0 && hud?.me && status === 'open' && (
+        <div ref={graceElement} className="grace-screen">
+          <GraceMenu
+            grace={graceId}
+            me={hud.me}
+            dust={hud.dust}
+            lit={hud.graces}
+            view={mapView}
+            backRef={graceBack}
+            onUpgrade={(stat) => clientRef.current?.upgradeStat(stat)}
+            onTravel={(grace) => clientRef.current?.travelTo(grace)}
+            onOpenMap={toggleMap}
+            onStand={standUp}
+          />
+        </div>
+      )}
+
+      {mapOpen && status === 'open' && (
+        <div ref={mapElement} className="map-screen">
+          <div className="map-screen__card">
+            <h1>World Map</h1>
+            <WorldMap view={mapView} lit={hud?.graces ?? []} here={graceId > 0 ? graceId : undefined} />
+            <WorldMapLegend />
+            <button type="button" className="btn btn--primary" onClick={toggleMap}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {!locked && status === 'open' && graceId === 0 && !mapOpen && (
         <div className="game__menu">
           <div ref={menuRef} className="game__menu-card">
             <h1>Paused</h1>

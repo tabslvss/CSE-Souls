@@ -21,6 +21,8 @@ export const FACE_VELOCITY = 2;
 export const FACE_DIGIT = 3;
 /** Faces the camera and pivots around the bottom edge, for light rays. */
 export const FACE_BASE = 4;
+/** A digit like FACE_DIGIT, except that its color is only the tint, so spells can have gold and blue ones. */
+export const FACE_DIGIT_TINT = 5;
 
 /** Velocity, gravity, drag and sideways wander. */
 export const MOVE_BALLISTIC = 0;
@@ -96,6 +98,7 @@ const VERTEX = /* glsl */ `
   varying vec4 vColor;
   varying float vAdditive;
   varying float vDigit;
+  varying float vGray;
 
   void main() {
     float age = uTime - iOriginBirth.w;
@@ -160,6 +163,7 @@ const VERTEX = /* glsl */ `
     vec2 corner = position.xy;
     vUv = mix(iUv.xy, iUv.zw, corner + 0.5);
     vDigit = -1.0;
+    vGray = step(4.5, face);
 
     if (face < 0.5 || (face > 3.5 && face < 4.5)) {
       float angle = iSpin.x + iSpin.y * age;
@@ -226,12 +230,15 @@ const FRAGMENT = /* glsl */ `
   varying vec4 vColor;
   varying float vAdditive;
   varying float vDigit;
+  varying float vGray;
 
   void main() {
     vec4 tex = vDigit >= 0.0 ? texture2D(tDigits, vec2((vUv.x + vDigit) * 0.5, vUv.y)) : texture2D(tAtlas, vUv);
     float alpha = tex.a * vColor.a;
     if (alpha < 0.004) discard;
-    gl_FragColor = vec4(tex.rgb * vColor.rgb * alpha, alpha * (1.0 - vAdditive));
+    // The digit art has its own color, which a blue tint would turn black.
+    vec3 base = vGray > 0.5 ? vec3(max(tex.r, max(tex.g, tex.b))) : tex.rgb;
+    gl_FragColor = vec4(base * vColor.rgb * alpha, alpha * (1.0 - vAdditive));
   }
 `;
 

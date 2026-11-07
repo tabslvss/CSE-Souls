@@ -30,7 +30,8 @@ const CONTROLS: Array<{ action: InputAction; label: string; padLabel?: string }>
   { action: 'attack', label: 'Attack' },
   { action: 'lock', label: 'Lock on to an enemy' },
   { action: 'potion', label: 'Drink a healing potion' },
-  { action: 'interact', label: 'Open a chest' },
+  { action: 'interact', label: 'Open a chest, or rest at a Binary Grace' },
+  { action: 'map', label: 'World map' },
   { action: 'zoom', label: 'Camera distance' },
   { action: 'pause', label: 'Pause' },
 ];

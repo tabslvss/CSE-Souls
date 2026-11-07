@@ -51,9 +51,12 @@ The game is in active development, and the project deadline is December 1, 2026.
 | `C` | Dodge roll |
 | Left click | Attack |
 | `1` or `Numpad 1` | Drink a healing potion |
-| `E` | Open a chest |
+| `E` | Open a chest, or rest at a Binary Grace |
+| `M` | World map |
 | Scroll | Camera distance |
 | `Esc` | Pause |
+
+**Binary Graces.** Golden lights around the map, one for each area. Walking near one lights it for good on that save, and `E` beside it sits you down, in one of eight seats so that a group can share it. Sitting refills health, magic, stamina and potions and makes that grace your way back when you fall. A hunter coming near stands you up, and so does moving or being hit. The menu there lets you spend Binary Dust to raise a stat (the cost is `upgradeCost(level)` in `shared/combat.ts`, a stat stops at 40, and each raise adds a level), travel to any grace you have lit, see the world map, and change saves. Each account has 3 saves, and each one is a whole character with its own class, looks, stats, Binary Dust, lit graces and opened chests. The browser only ever asks: the server checks distance, resting, dust and ownership itself, and the upgrade is one atomic SQL update. The rules are in `shared/graces.ts` and `server/src/app/combat.ts`, the saves are in `server/migrations/003_saves.sql`, and the look is in `client/src/game/graces.ts`.
 
 **Server-authoritative movement.** The server runs the game at 30 ticks per second and sends a snapshot every 2 ticks. Clients send inputs only (sequence number, direction, facing, and run, dodge, jump, potion and attack flags). The server never accepts a position from a client, and an input budget stops a client from moving faster than real time. On top of that, the browser uses three techniques:
 
@@ -147,7 +150,7 @@ With the stack running:
 cd server && npm install && npm test
 ```
 
-This runs the test suite against the running app through nginx. `test/security.test.ts` checks forged, expired and wrong-algorithm JWTs, XSRF refusals, SQL injection attempts, disguised uploads, WebSocket hijacking, cookie directives and more. `test/game.test.ts` checks the character API, entering the world, seeing other players, movement, anti-cheat and badly behaved clients. The security tests also call `docker compose` to inspect the containers, so run them on the machine hosting the stack. Every run registers new random accounts. Combat is not covered, because it is not built yet.
+This runs the test suite against the running app through nginx. `test/security.test.ts` checks forged, expired and wrong-algorithm JWTs, XSRF refusals, SQL injection attempts, disguised uploads, WebSocket hijacking, cookie directives and more. `test/game.test.ts` checks the character API, entering the world, seeing other players, movement, anti-cheat and badly behaved clients. The security tests also call `docker compose` to inspect the containers, so run them on the machine hosting the stack. Every run registers new random accounts. `test/world.test.ts` and `test/combat.test.ts` cover combat, creatures, chests and Binary Graces, including raising stats, travel, and keeping saves apart.
 
 To prove sessions survive a restart: log in, run `docker compose restart`, refresh the page.
 

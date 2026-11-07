@@ -24,6 +24,7 @@ const DITHER_SHADER = /* glsl */ `
   uniform float uDitherStrength;
   uniform float uVignette;
   uniform float uDamage;
+  uniform vec4 uLens; // center x, center y, ring radius, strength
   varying vec2 vUv;
 
   const float BAYER[16] = float[16](
@@ -34,7 +35,16 @@ const DITHER_SHADER = /* glsl */ `
   );
 
   void main() {
-    vec2 pixel = floor(vUv * uResolution);
+    // A ring of bent light spreading from the biggest blasts. It bends before the pixels are chosen,
+    // so the bent picture is still made of the same chunky pixels.
+    vec2 lensUv = vUv;
+    if (uLens.w > 0.0005) {
+      vec2 fromCenter = (vUv - uLens.xy) * vec2(uResolution.x / uResolution.y, 1.0);
+      float away = length(fromCenter);
+      float ring = smoothstep(0.1, 0.0, abs(away - uLens.z));
+      if (away > 0.001) lensUv -= fromCenter / away * vec2(uResolution.y / uResolution.x, 1.0) * ring * uLens.w;
+    }
+    vec2 pixel = floor(lensUv * uResolution);
     vec3 color = texture2D(tScene, (pixel + 0.5) / uResolution).rgb;
     color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
 
@@ -220,6 +230,11 @@ const GLITCH_DECAY = 5;
 const ECHO_DECAY = 2.2;
 const DAMAGE_DECAY = 1.6;
 const IMPACT_DECAY = 11;
+/** How far a lens bend pushes the picture, as a share of the screen's height. */
+const LENS_STRENGTH = 0.05;
+const LENS_DECAY = 5.5;
+/** Screen heights per second that the bent ring spreads. */
+const LENS_SPEED = 1.5;
 /** Longest gap between frames the tape effects will step over, so a hidden tab doesn't jump. */
 const MAX_FRAME_SECONDS = 0.1;
 
@@ -231,6 +246,10 @@ export class VhsControls {
   /** @internal */ echoLevel = 0;
   /** @internal */ damageLevel = 0;
   /** @internal */ impactLevel = 0;
+  /** @internal */ lensX = 0;
+  /** @internal */ lensY = 0;
+  /** @internal */ lensLevel = 0;
+  /** @internal */ lensAge = 0;
 
   /** Tracking tear, block shifts and RGB split: 0.25 for a normal hit, 0.5 heavy, 0.8 a kill or a big hit taken. */
   glitch(amount: number): void {
@@ -250,6 +269,14 @@ export class VhsControls {
   /** The picture itself taking the blow, for a few frames: about 0.3 normal, 0.6 heavy, 1 a kill. */
   impact(amount: number): void {
     this.impactLevel = Math.min(1, Math.max(this.impactLevel, amount));
+  }
+
+  /** A brief lens bend spreading from a spot on screen, each side 0 to 1. Keep it for the very biggest hits. */
+  lens(x: number, y: number, amount: number): void {
+    this.lensX = x;
+    this.lensY = y;
+    this.lensLevel = Math.min(1, Math.max(0, amount));
+    this.lensAge = 0;
   }
 
   /** The player's setting, saved in the browser. Off skips the whole tape pass. */
@@ -314,6 +341,7 @@ export class PsxRenderer {
         uDitherStrength: { value: 1 },
         uVignette: { value: 1.1 },
         uDamage: { value: 0 },
+        uLens: { value: new THREE.Vector4(0, 0, 0, 0) },
       },
     });
     this.echoMaterial = new THREE.ShaderMaterial({
@@ -382,6 +410,11 @@ export class PsxRenderer {
     vhs.echoLevel *= Math.exp(-ECHO_DECAY * frame);
     vhs.damageLevel *= Math.exp(-DAMAGE_DECAY * frame);
     vhs.impactLevel *= Math.exp(-IMPACT_DECAY * frame);
+
+    vhs.lensAge += frame;
+    // Reduced motion keeps a little of it: a blast with no reaction at all reads as a bug.
+    const lensStrength = vhs.lensLevel * LENS_STRENGTH * Math.exp(-vhs.lensAge * LENS_DECAY) * (this.reducedMotion.matches ? 0.3 : 1);
+    (this.material.uniforms.uLens.value as THREE.Vector4).set(vhs.lensX, vhs.lensY, 0.04 + vhs.lensAge * LENS_SPEED, lensStrength);
 
     if (!vhsEnabled() || this.vhs.intensity <= 0) {
       this.material.uniforms.uDamage.value = vhs.damageLevel;

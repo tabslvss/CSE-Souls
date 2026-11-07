@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { WEAPON_STYLES, type WeaponStyle } from '../../../../shared/combat';
+import { ARCANE_BLUE, ARCANE_WHITE, ArcaneFx, LIGHT_ARCANE_BLUE } from './arcane';
 import { ATLAS } from './atlas';
 import { CorpseDissolver } from './dissolve';
 import { HealRibbons } from './healRibbons';
@@ -151,6 +152,8 @@ interface Arrival {
 export class GameFx {
   /** Ground height for stains and rings. Set it if the ground isn't at 0. */
   groundY = 0;
+  /** Every spell's bolts, crescents, meteors and light. */
+  readonly arcane: ArcaneFx;
 
   private readonly pool: ParticlePool;
   private readonly trails: TrailPool;
@@ -174,8 +177,6 @@ export class GameFx {
   private nextLight = 0;
   private dustWindow = 0;
   private dustSpent = 0;
-  private lastCast = -10;
-  private castCarry = 0;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -194,11 +195,12 @@ export class GameFx {
     this.pool = new ParticlePool(this.atlas, this.digits, phone ? CAPACITY_PHONE : CAPACITY_DESKTOP, SPRITE.glow);
     scene.add(this.pool.mesh);
     this.healing = new HealRibbons(scene, this.pool);
+    this.arcane = new ArcaneFx(scene, camera, this.pool, (x, y, z, color, intensity, decay) => this.lightAt(x, y, z, color, intensity, decay));
 
     const color = (values: readonly [number, number, number]) => new THREE.Color(values[0], values[1], values[2]);
     this.trails = new TrailPool(
-      [color(GOLD), color(CRIMSON), color(WIND_RIBBON)],
-      [color(WHITE_HOT), color(CRIMSON_HOT), color(WHITE_HOT)],
+      [color(GOLD), color(ARCANE_BLUE), color(WIND_RIBBON)],
+      [color(WHITE_HOT), color(ARCANE_WHITE), color(WHITE_HOT)],
     );
     scene.add(this.trails.mesh);
 
@@ -235,6 +237,7 @@ export class GameFx {
     this.trails.update(seconds);
     this.corpses.update(seconds);
     this.healing.update(seconds);
+    this.arcane.update(seconds);
     const fog = this.scene.fog;
     if (fog instanceof THREE.Fog) this.pool.setFog(fog.near, fog.far, fog.color);
 
@@ -282,6 +285,7 @@ export class GameFx {
     this.trails.dispose();
     this.corpses.dispose();
     this.healing.dispose();
+    this.arcane.dispose();
     this.atlas.dispose();
     this.digits.dispose();
     this.arrows.geometry.dispose();
@@ -305,9 +309,9 @@ export class GameFx {
     const dirX = Math.sin(dirYaw);
     const dirZ = Math.cos(dirYaw);
 
-    this.flash(pos, name === 'magic' ? LIGHT_CRIMSON : LIGHT_GOLD, kill ? 16 : heavy ? 10 : 5, kill ? 7 : 14);
+    this.flash(pos, name === 'magic' ? LIGHT_ARCANE_BLUE : LIGHT_GOLD, kill ? 16 : heavy ? 10 : name === 'magic' ? 8 : 5, kill ? 7 : 14);
     if (name === 'magic') {
-      this.magicImpact(pos, power, far);
+      this.arcane.impact(pos, power, far);
     } else {
       this.impactFlash(pos, power, metal);
       this.cutLine(pos, dirX, dirZ, name, power);
@@ -625,52 +629,6 @@ export class GameFx {
     }
   }
 
-  private magicImpact(pos: Position, power: number, far: boolean): void {
-    const s = this.pool.reset();
-    s.x = pos.x; s.y = pos.y; s.z = pos.z;
-    s.additive = 1;
-    s.ignoreFog = true;
-    s.fadeOut = 0.1;
-    s.sprite = SPRITE.glow;
-    setColor(s, CRIMSON, DIGITS[2]);
-    s.size = 0.7 * power;
-    s.endSize = 1.25 * power;
-    s.life = 0.16;
-    s.alpha = 0.2;
-    this.pool.emit();
-    this.digitBurst(pos.x, pos.y, pos.z, far ? 8 : (22 * power) | 0, 4.4, 0.75);
-  }
-
-  /** Red digits thrown outward that slow, hang and go dark. Shared by magic hits, bolts and deaths. */
-  private digitBurst(x: number, y: number, z: number, count: number, speed: number, life: number): void {
-    const s = this.pool.reset();
-    s.face = FACE_DIGIT;
-    s.ignoreFog = true;
-    s.additive = 0.7;
-    s.minPixels = 7;
-    s.fadeOut = 0.45;
-    for (let i = 0; i < count; i += 1) {
-      const angle = rand(0, 6.283);
-      const up = rand(-0.3, 1);
-      const pace = rand(0.35, 1) * speed;
-      const flat = Math.sqrt(1 - up * up);
-      // Born slightly apart. All on one point, the first frames are a solid red rectangle.
-      s.x = x + Math.cos(angle) * flat * 0.14; s.y = y + up * 0.14; s.z = z + Math.sin(angle) * flat * 0.14;
-      s.vx = Math.cos(angle) * flat * pace;
-      s.vy = up * pace + 0.5;
-      s.vz = Math.sin(angle) * flat * pace;
-      s.drag = 4.2;
-      s.gravity = -0.35;
-      s.size = rand(0.11, 0.17);
-      s.endSize = s.size;
-      s.life = rand(0.55, 1.1) * life / 0.75;
-      s.alpha = 1;
-      const color = pick(DIGITS);
-      setColor(s, CRIMSON_HOT, color);
-      this.pool.emit();
-    }
-  }
-
   private killFlourish(pos: Position, far: boolean): void {
     const s = this.pool.reset();
     // The arc of light that says "that one's done", held just longer than a normal hit.
@@ -740,21 +698,7 @@ export class GameFx {
     const look = this.trails.lastLook;
     const s = this.pool.reset();
     if (look === TRAIL_MAGIC) {
-      if (Math.random() < moved * 4.5) {
-        s.face = FACE_DIGIT;
-        s.ignoreFog = true;
-        s.additive = 0.7;
-        s.minPixels = 7;
-        s.fadeOut = 0.4;
-        s.x = tip.x + rand(-0.06, 0.06); s.y = tip.y + rand(-0.06, 0.06); s.z = tip.z + rand(-0.06, 0.06);
-        s.vx = rand(-0.5, 0.5); s.vy = rand(0.1, 0.9); s.vz = rand(-0.5, 0.5);
-        s.drag = 2.5;
-        s.size = s.endSize = rand(0.1, 0.14);
-        s.life = rand(0.35, 0.65);
-        const color = pick(DIGITS);
-        setColor(s, color, DIGITS[2]);
-        this.pool.emit();
-      }
+      this.arcane.swingSpark(tip.x, tip.y, tip.z, moved);
     } else if (look === TRAIL_WIND) {
       if (Math.random() < moved * 1.1) {
         s.face = FACE_VELOCITY;
@@ -934,10 +878,14 @@ export class GameFx {
   /* ---------- Projectiles ---------- */
 
   /**
-   * On a 'shot' event. Moves on its own until endProjectile or until range runs out. Magic is drawn
-   * as Binary Dust. An arrow uses the mesh given, or a built-in shaft.
+   * On a 'shot' event. Moves on its own until endProjectile or until range runs out. An arrow uses
+   * the mesh given, or a built-in shaft. Magic becomes a straight bolt here: see arcane for the rest.
    */
   spawnProjectile(id: number, pos: Position, yaw: number, speed: number, range: number, style: StyleRef, mesh?: THREE.Object3D): void {
+    if (styleName(style) === 'magic') {
+      this.arcane.bolt(id, pos.x, pos.z, pos, yaw, speed, range, 0, 0);
+      return;
+    }
     let slot: Projectile | null = null;
     for (let i = 0; i < MAX_PROJECTILES; i += 1) {
       if (!this.projectiles[i].active) {
@@ -961,10 +909,6 @@ export class GameFx {
     if (slot.style === 'arrow' && !mesh) {
       slot.arrowIndex = this.arrowCursor;
       this.arrowCursor = (this.arrowCursor + 1) % MAX_ARROW_MESHES;
-    }
-    if (slot.style === 'magic') {
-      this.flash(pos, LIGHT_CRIMSON, 3.5, 16);
-      this.digitBurst(pos.x, pos.y, pos.z, 7, 2.2, 0.4);
     }
     this.placeProjectileMesh(slot);
   }
@@ -996,70 +940,22 @@ export class GameFx {
     }
     this.placeProjectileMesh(p);
     p.emit += seconds;
-    if (p.style === 'magic') {
-      while (p.emit >= 0.014) {
-        p.emit -= 0.014;
-        this.boltDigit(p);
-      }
-    } else {
-      while (p.emit >= 0.03) {
-        p.emit -= 0.03;
-        const s = this.pool.reset();
-        s.face = FACE_VELOCITY;
-        s.additive = 1;
-        s.sprite = SPRITE.streak;
-        s.x = p.x; s.y = p.y; s.z = p.z;
-        s.vx = p.dirX * 0.6; s.vz = p.dirZ * 0.6;
-        s.size = 0.035;
-        s.endSize = 0.01;
-        s.aspect = 22;
-        s.minPixels = 1;
-        s.life = 0.14;
-        s.alpha = 0.5;
-        s.fadeOut = 0.1;
-        setColor(s, WIND, DUST);
-        this.pool.emit();
-      }
-    }
-  }
-
-  /** The bolt is nothing but digits: a tight bright head, and a thin dying tail left where it was. */
-  private boltDigit(p: Projectile): void {
-    const s = this.pool.reset();
-    s.face = FACE_DIGIT;
-    s.ignoreFog = true;
-    s.additive = 0.8;
-    s.minPixels = 7;
-    const inHead = Math.random() < 0.5;
-    const spread = inHead ? 0.13 : 0.08;
-    s.x = p.x + rand(-spread, spread) + (inHead ? p.dirX * p.speed * 0.012 : 0);
-    s.y = p.y + rand(-spread, spread);
-    s.z = p.z + rand(-spread, spread) + (inHead ? p.dirZ * p.speed * 0.012 : 0);
-    s.vx = p.dirX * (inHead ? p.speed : 0.7) + rand(-0.3, 0.3);
-    s.vy = rand(-0.2, 0.3);
-    s.vz = p.dirZ * (inHead ? p.speed : 0.7) + rand(-0.3, 0.3);
-    s.drag = inHead ? 0 : 1.5;
-    s.size = s.endSize = inHead ? rand(0.12, 0.17) : rand(0.09, 0.13);
-    s.life = inHead ? rand(0.05, 0.1) : rand(0.3, 0.6);
-    s.fadeOut = inHead ? 0.7 : 0.25;
-    const color = pick(DIGITS);
-    setColor(s, inHead ? CRIMSON_HOT : color, inHead ? color : DIGITS[2]);
-    this.pool.emit();
-
-    // A faint red bloom under the head, so the bolt lights its digits from within.
-    if (Math.random() < 0.3) {
-      const g = this.pool.reset();
-      g.sprite = SPRITE.glow;
-      g.additive = 1;
-      g.ignoreFog = true;
-      g.x = p.x; g.y = p.y; g.z = p.z;
-      g.vx = p.dirX * p.speed; g.vz = p.dirZ * p.speed;
-      g.size = 0.8;
-      g.endSize = 0.5;
-      g.life = 0.07;
-      g.alpha = 0.3;
-      g.fadeOut = 0.5;
-      setColor(g, CRIMSON, CRIMSON);
+    while (p.emit >= 0.03) {
+      p.emit -= 0.03;
+      const s = this.pool.reset();
+      s.face = FACE_VELOCITY;
+      s.additive = 1;
+      s.sprite = SPRITE.streak;
+      s.x = p.x; s.y = p.y; s.z = p.z;
+      s.vx = p.dirX * 0.6; s.vz = p.dirZ * 0.6;
+      s.size = 0.035;
+      s.endSize = 0.01;
+      s.aspect = 22;
+      s.minPixels = 1;
+      s.life = 0.14;
+      s.alpha = 0.5;
+      s.fadeOut = 0.1;
+      setColor(s, WIND, DUST);
       this.pool.emit();
     }
   }
@@ -1071,135 +967,41 @@ export class GameFx {
     }
   }
 
-  /** On a 'shotEnd' event. pos is where the server says it ended. splash is the area in meters. */
-  endProjectile(id: number, pos: Position, hit: boolean, splash = 0): void {
-    let style: WeaponStyle = 'magic';
+  /** On a 'shotEnd' event. pos is where the server says it ended. */
+  endProjectile(id: number, pos: Position, hit: boolean, style: StyleRef = 'arrow'): void {
+    if (styleName(style) === 'magic') {
+      this.arcane.endShot(id, pos, hit);
+      return;
+    }
     for (let i = 0; i < MAX_PROJECTILES; i += 1) {
       const p = this.projectiles[i];
       if (!p.active || p.id !== id) continue;
-      style = p.style;
       this.hideProjectileMesh(p);
       p.active = false;
       p.mesh = null;
       break;
     }
-    if (style === 'magic') {
-      this.flash(pos, LIGHT_CRIMSON, hit ? 10 : 3, 9);
-      this.digitBurst(pos.x, pos.y, pos.z, hit ? 34 + ((splash * 12) | 0) : 12, hit ? 3 + splash * 0.9 : 1.6, hit ? 0.8 : 0.45);
-      const s = this.pool.reset();
-      s.x = pos.x; s.y = pos.y; s.z = pos.z;
-      s.additive = 1;
-      s.ignoreFog = true;
-      s.sprite = SPRITE.glow;
-      s.fadeOut = 0.1;
-      setColor(s, CRIMSON, DIGITS[2]);
-      s.size = hit ? 0.85 : 0.4;
-      s.endSize = hit ? 1.6 : 0.7;
-      s.life = 0.17;
-      s.alpha = 0.22;
-      this.pool.emit();
-      if (splash > 0) {
-        // Shows the real area of the blast: faint, brief, and digits around its edge.
-        s.face = FACE_GROUND;
-        s.sprite = SPRITE.shock;
-        s.y = this.groundY + 0.06;
-        s.size = splash * 0.6;
-        s.endSize = splash * 2.5;
-        s.life = 0.32;
-        s.alpha = 0.42;
-        setColor(s, CRIMSON, DIGITS[2]);
-        this.pool.emit();
-        const d = this.pool.reset();
-        d.face = FACE_DIGIT;
-        d.ignoreFog = true;
-        d.additive = 0.7;
-        d.minPixels = 7;
-        d.fadeOut = 0.4;
-        for (let i = 0; i < 24; i += 1) {
-          const angle = (i / 24) * 6.283;
-          d.x = pos.x + Math.cos(angle) * splash * 0.3;
-          d.y = this.groundY + rand(0.1, 0.5);
-          d.z = pos.z + Math.sin(angle) * splash * 0.3;
-          d.vx = Math.cos(angle) * splash * 3.8;
-          d.vz = Math.sin(angle) * splash * 3.8;
-          d.vy = rand(0, 0.9);
-          d.drag = 5.5;
-          d.size = d.endSize = rand(0.1, 0.14);
-          d.life = rand(0.45, 0.85);
-          const color = pick(DIGITS);
-          setColor(d, color, DIGITS[2]);
-          this.pool.emit();
-        }
-      }
-    } else {
-      // An arrow only puffs where it stops. The 'hit' event on a creature handles blood.
-      const s = this.pool.reset();
-      s.sprite = pick(SPRITE.dust);
-      s.x = pos.x; s.y = pos.y; s.z = pos.z;
-      s.size = 0.16;
-      s.endSize = 0.5;
-      s.life = 0.35;
-      s.alpha = 0.3;
-      s.fadeOut = 0.1;
-      setColor(s, DUST, DUST_DARK);
-      this.pool.emit();
-    }
+    // An arrow only puffs where it stops. The 'hit' event on a creature handles blood.
+    const s = this.pool.reset();
+    s.sprite = pick(SPRITE.dust);
+    s.x = pos.x; s.y = pos.y; s.z = pos.z;
+    s.size = 0.16;
+    s.endSize = 0.5;
+    s.life = 0.35;
+    s.alpha = 0.3;
+    s.fadeOut = 0.1;
+    setColor(s, DUST, DUST_DARK);
+    this.pool.emit();
   }
 
   /* ---------- Magic casting and Binary Dust ---------- */
 
   /**
-   * Digits circling the hand or book. Call it once for a short swirl, or every frame of the windup
-   * with the hand's current position to keep the swirl on the hand.
+   * Light gathering on the hand or weapon. Call it every frame of the windup with the current position
+   * to keep it there. power is about 1 for a wand and more than 2 for the staff.
    */
-  castMagic(handPos: Position, style: StyleRef = 'magic'): void {
-    if (styleName(style) !== 'magic') return;
-    const now = this.pool.now;
-    const fresh = now - this.lastCast > 0.25;
-    this.castCarry = fresh ? 20 : this.castCarry + (now - this.lastCast) * 70;
-    this.lastCast = now;
-    const count = Math.min(16, this.castCarry | 0);
-    this.castCarry -= count;
-    const s = this.pool.reset();
-    s.face = FACE_DIGIT;
-    s.move = MOVE_ORBIT;
-    s.ignoreFog = true;
-    s.additive = 0.75;
-    s.minPixels = 7;
-    s.fadeIn = 0.1;
-    s.fadeOut = 0.55;
-    for (let i = 0; i < count; i += 1) {
-      s.x = handPos.x;
-      s.y = handPos.y + rand(-0.22, 0.14);
-      s.z = handPos.z;
-      s.vx = 0;
-      s.vy = rand(0.08, 0.5);
-      s.vz = 0;
-      s.rotation = rand(0, 6.283);
-      s.spin = rand(4.5, 9) * (Math.random() < 0.8 ? 1 : -1);
-      s.extra = rand(0.16, 0.42);
-      s.size = s.endSize = rand(0.08, 0.12);
-      s.life = rand(0.35, 0.65);
-      s.alpha = 1;
-      const color = pick(DIGITS);
-      setColor(s, color, DIGITS[2]);
-      this.pool.emit();
-    }
-    if (fresh || Math.random() < 0.2) {
-      const g = this.pool.reset();
-      g.sprite = SPRITE.glow;
-      g.additive = 1;
-      g.ignoreFog = true;
-      g.x = handPos.x; g.y = handPos.y; g.z = handPos.z;
-      g.size = 0.5;
-      g.endSize = 0.8;
-      g.life = 0.2;
-      g.alpha = 0.3;
-      g.fadeIn = 0.2;
-      g.fadeOut = 0.3;
-      setColor(g, CRIMSON, CRIMSON);
-      this.pool.emit();
-    }
+  castMagic(handPos: Position, style: StyleRef = 'magic', power = 1): void {
+    if (styleName(style) === 'magic') this.arcane.charge(handPos, power);
   }
 
   /**

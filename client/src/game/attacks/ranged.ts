@@ -7,6 +7,9 @@ import type { Attack, AttackKey, FreeHand, Pose, StanceLife, Vec3, WeaponMoves }
  *
  * The shot turns the whole body side-on: the left shoulder and left foot go toward the target, and both
  * feet end up across the line of the shot. The release is the impact key.
+ *
+ * These stances are the ready poses, held only for a moment around a shot. The rest of the time the rig
+ * wears the bow on the back and leaves the body to the clips.
  */
 
 /** The idle clip holds the chin a little high, and a fighter looks level at what's ahead. */
