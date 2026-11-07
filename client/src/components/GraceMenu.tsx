@@ -92,16 +92,18 @@ function TravelTab({
   return (
     <div className="grace-menu__body">
       <p className="grace-menu__lead">Go straight to any Binary Grace you have found. Choose one from the list or on the map.</p>
-      <ul className="grace-travel">
-        {known.map((grace) => (
-          <li key={grace.id}>
-            <button type="button" className="btn btn--small btn--block" disabled={grace.id === here} onClick={() => onTravel(grace.id)}>
-              {grace.id === here ? `${grace.name} (you are here)` : grace.name}
-            </button>
-          </li>
-        ))}
-      </ul>
-      <WorldMap view={view} lit={lit} here={here} onPick={onTravel} />
+      <div className="grace-travel-layout">
+        <ul className="grace-travel">
+          {known.map((grace) => (
+            <li key={grace.id}>
+              <button type="button" className="btn btn--small btn--block" disabled={grace.id === here} onClick={() => onTravel(grace.id)}>
+                {grace.id === here ? `${grace.name} (you are here)` : grace.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+        <WorldMap view={view} lit={lit} here={here} onPick={onTravel} />
+      </div>
       <WorldMapLegend />
     </div>
   );
@@ -250,7 +252,7 @@ export function GraceMenu({
   }, []);
 
   return (
-    <aside className="grace-menu" aria-label="Binary Grace">
+    <aside className={`grace-menu${tab === 'travel' ? ' grace-menu--wide' : ''}`} aria-label="Binary Grace">
       <header className="grace-menu__head">
         <h1>{findGrace(MAP.graces, grace)?.name ?? 'Binary Grace'}</h1>
         <p className="grace-menu__rested">Rested. Health, magic, stamina and potions are full, and you will come back here if you fall.</p>

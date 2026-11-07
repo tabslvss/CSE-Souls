@@ -272,10 +272,12 @@ export function GamePage() {
       {mapOpen && status === 'open' && (
         <div ref={mapElement} className="map-screen">
           <div className="map-screen__card">
-            <h1>World Map</h1>
+            <header className="map-screen__head">
+              <h1>World Map</h1>
+              <button type="button" className="btn btn--primary btn--small" onClick={toggleMap}>Close</button>
+            </header>
             <WorldMap view={mapView} lit={hud?.graces ?? []} here={graceId > 0 ? graceId : undefined} />
             <WorldMapLegend />
-            <button type="button" className="btn btn--primary" onClick={toggleMap}>Close</button>
           </div>
         </div>
       )}

@@ -1935,18 +1935,39 @@
 }
 
 .world-map {
+  /* Grows to whatever room its parent gives it. The drawing keeps the map's proportions inside. */
+  position: relative;
   display: block;
   width: 100%;
-  /* The drawing keeps the map's own proportions inside this, whatever shape it is. */
-  aspect-ratio: 1;
+  min-height: 0;
   background: #0d0b08;
-  box-shadow: inset 0 0 0 1px var(--gold-deep);
+}
+
+.world-map__canvas {
+  position: absolute;
+  inset: 9px;
+  display: block;
+  width: calc(100% - 18px);
+  height: calc(100% - 18px);
+  /* A drag pans the map and never scrolls the page on a touch screen. */
+  touch-action: none;
+  user-select: none;
+}
+
+/* The site's painted frame, laid over the canvas's edge. */
+.world-map__frame {
+  position: absolute;
+  inset: 0;
+  border: 16px solid transparent;
+  border-image: url('../art/ui-panel-frame.webp') 62 / 24px / 0 stretch;
+  pointer-events: none;
 }
 
 .world-map__legend {
   grid-auto-flow: column;
   justify-content: center;
-  gap: 16px;
+  align-items: center;
+  gap: 20px;
   color: var(--text-2);
   font-size: 0.85rem;
 }
@@ -1954,10 +1975,18 @@
 .world-map__legend li {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.world-map__hint {
+  padding-left: 20px;
+  border-left: 1px solid var(--gold-deep);
+  font-style: italic;
 }
 
 .world-map__mark {
+  flex: none;
   display: inline-block;
   width: 9px;
   height: 9px;
@@ -1965,18 +1994,32 @@
 }
 
 .world-map__mark--me {
+  width: 12px;
+  height: 13px;
   background: #ffffff;
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 50% 74%, 0 100%);
 }
 
 .world-map__mark--grace {
+  width: 13px;
+  height: 13px;
   background: var(--gold-bright);
   border-radius: 0;
-  transform: rotate(45deg);
-  box-shadow: 0 0 8px var(--ember);
+  clip-path: polygon(50% 0, 60% 40%, 100% 50%, 60% 60%, 50% 100%, 40% 60%, 0 50%, 40% 40%);
 }
 
 .world-map__mark--player {
-  background: #9fc4e8;
+  background: #c9dceb;
+  box-shadow: 0 0 0 1px #0c0a08;
+}
+
+.world-map__mark--unexplored {
+  width: 14px;
+  height: 10px;
+  border-radius: 1px;
+  background: #3a3530;
+  box-shadow: inset 0 0 0 1px rgba(201, 164, 92, 0.35);
 }
 
 .map-screen {
@@ -1984,26 +2027,81 @@
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(4, 3, 2, 0.6);
+  background: rgba(4, 3, 2, 0.72);
 }
 
 .map-screen__card {
   display: grid;
-  justify-items: center;
-  gap: 12px;
-  width: min(94vw, 76vh);
-  max-height: 98vh;
-  overflow-y: auto;
-  padding: 18px 22px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  width: min(98vw, 1900px);
+  height: 97vh;
+  padding: 8px 14px 10px;
   background: linear-gradient(180deg, rgba(26, 22, 16, 0.97), rgba(12, 10, 8, 0.98));
   box-shadow:
-    inset 0 0 0 1px var(--gold),
+    inset 0 0 0 1px var(--gold-deep),
     0 0 60px rgba(0, 0, 0, 0.7);
 }
 
+.map-screen__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .map-screen__card h1 {
-  font-size: 1.5rem;
+  margin: 0;
+  font-size: 1.25rem;
+  letter-spacing: 0.12em;
   color: var(--gold-bright);
+}
+
+.map-screen__card .world-map {
+  height: 100%;
+}
+
+/* A short window keeps the room for the map. */
+@media (max-height: 560px), (max-width: 760px) {
+  .world-map__hint {
+    display: none;
+  }
+
+  .world-map__legend {
+    gap: 12px;
+    font-size: 0.75rem;
+    white-space: normal;
+  }
+}
+
+/* The grace menu grows for its map tab, and leaves the fire and the people sitting at it in view when it doesn't. */
+.grace-menu--wide {
+  width: min(96vw, 1060px);
+}
+
+.grace-travel-layout {
+  display: grid;
+  grid-template-columns: minmax(170px, 230px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.grace-travel-layout .btn {
+  white-space: normal;
+}
+
+.grace-travel-layout .world-map {
+  height: clamp(320px, calc(100vh - 340px), 900px);
+}
+
+@media (max-width: 760px) {
+  .grace-travel-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .grace-travel-layout .world-map {
+    height: min(70vh, 94vw);
+  }
 }
 
 :is(.grace-menu, .map-screen__card) :is(button, a, input):focus-visible {

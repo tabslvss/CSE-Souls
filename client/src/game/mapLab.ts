@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { MAP } from '../../../shared/mapData';
-import { PsxRenderer } from './psxRenderer';
+import { PsxRenderer, snapUniform } from './psxRenderer';
 import { createWorld } from './world';
 
 /*
@@ -182,6 +182,75 @@ if (params.get('overlay') === '1') setOverlay(true);
 // Screenshot scripts draw frames on demand, so a software renderer isn't kept busy between shots.
 if (params.get('manual') !== '1') requestAnimationFrame(loop);
 
+let bakeRenderer: THREE.WebGLRenderer | null = null;
+
+interface BakeOptions {
+  width: number;
+  height: number;
+  /** Where the sun is, as a direction from the ground. */
+  sun: [number, number, number];
+  /** Leaves the ground out and the background clear, so the alpha channel says where things stand. */
+  propsOnly?: boolean;
+  shadows?: boolean;
+  /** With propsOnly: draws only the models whose names match this regular expression. */
+  match?: string;
+}
+
+/**
+ * Draws the whole world straight down with no PS1 pass, for tools/build-world-map.mjs. The picture
+ * matches MAP.bounds edge to edge, with north (minZ) at the top. Answers a PNG as base64.
+ */
+function bakeTopDown({ width, height, sun, propsOnly = false, shadows = true, match }: BakeOptions): string {
+  const { minX, maxX, minZ, maxZ } = MAP.bounds;
+  figure.visible = false;
+  setOverlay(false);
+  // A grid this fine turns the PS1 vertex wobble off.
+  snapUniform.value.set(1e6, 1e6);
+  const { ground, sun: light } = world.prepareTopDown(new THREE.Vector3(...sun));
+  const meshes: THREE.Mesh[] = [];
+  world.scene.traverse((object) => {
+    if ((object as THREE.Mesh).isMesh) meshes.push(object as THREE.Mesh);
+  });
+
+  if (!bakeRenderer) {
+    bakeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    bakeRenderer.shadowMap.enabled = true;
+    bakeRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    bakeRenderer.setPixelRatio(1);
+    bakeRenderer.setClearColor(0x000000, 0);
+    light.castShadow = true;
+    light.shadow.mapSize.set(8192, 8192);
+    light.shadow.bias = -0.0004;
+    light.shadow.normalBias = 0.06;
+    Object.assign(light.shadow.camera, { left: -440, right: 440, top: 440, bottom: -440, near: 50, far: 2000 });
+    light.shadow.camera.updateProjectionMatrix();
+    // The ground's mountains would throw shadows across the whole map, and thin trunks streak it.
+    for (const mesh of meshes) mesh.castShadow = mesh !== ground && !/^tree_/.test(mesh.name);
+  }
+  for (const mesh of meshes) mesh.receiveShadow = shadows;
+  bakeRenderer.setSize(width, height, false);
+
+  const top = new THREE.OrthographicCamera(minX, maxX, -minZ, -maxZ, 10, 2000);
+  top.position.set(0, 1000, 0);
+  // Looking down with north up: the view's right is +x, and its up is -z.
+  top.up.set(0, 0, -1);
+  top.lookAt(0, 0, 0);
+  top.updateMatrixWorld();
+
+  // Culling decides which meshes are visible while rendering, so it has to have settled before filtering.
+  bakeRenderer.render(world.scene, top);
+  const wasVisible = new Map(meshes.map((mesh) => [mesh, mesh.visible]));
+  const matches = match ? new RegExp(match) : null;
+  if (propsOnly) {
+    for (const mesh of meshes) mesh.visible = mesh !== ground && mesh.visible && (!matches || matches.test(mesh.name));
+    bakeRenderer.render(world.scene, top);
+  }
+  bakeRenderer.getContext().finish();
+  const png = bakeRenderer.domElement.toDataURL('image/png').split(',')[1];
+  for (const mesh of meshes) mesh.visible = wasVisible.get(mesh) ?? mesh.visible;
+  return png;
+}
+
 declare global {
   interface Window {
     lab: {
@@ -197,6 +266,8 @@ declare global {
       breakdown: () => Array<[string, number, number]>;
       /** The world itself, so that a test can call its chest functions directly. */
       world: typeof world;
+      bakeTopDown: typeof bakeTopDown;
+      mapData: () => Pick<typeof MAP, 'bounds' | 'road' | 'trails' | 'zones' | 'graces' | 'spawn' | 'props'>;
       views: string[];
       ready: Promise<void>;
     };
@@ -242,6 +313,8 @@ window.lab = {
     return [...totals.entries()].map(([name, [triangles, count]]) => [name, triangles, count] as [string, number, number]).sort((a, b) => b[1] - a[1]).slice(0, 14);
   },
   world,
+  bakeTopDown,
+  mapData: () => ({ bounds: MAP.bounds, road: MAP.road, trails: MAP.trails, zones: MAP.zones, graces: MAP.graces, spawn: MAP.spawn, props: MAP.props }),
   views: Object.keys(VIEWS),
   ready: world.ready,
 };

@@ -382,16 +382,16 @@ function buildPropSets(
   return sets;
 }
 
-function cullProps(sets: PropSet[], frustum: THREE.Frustum, cameraPosition: THREE.Vector3, fogFar: number): void {
+function cullProps(sets: PropSet[], frustum: THREE.Frustum, cameraPosition: THREE.Vector3, fogFar: number, everything = false): void {
   const next = new Int32Array(1024);
   for (const set of sets) {
-    const limit = set.castle ? set.reach : Math.min(set.reach, fogFar + 6);
+    const limit = everything ? Infinity : set.castle ? set.reach : Math.min(set.reach, fogFar + 6);
     let visible = 0;
     let scratch = set.chunks.length > next.length ? new Int32Array(set.chunks.length) : next;
     for (let c = 0; c < set.chunks.length; c += 1) {
       const chunk = set.chunks[c];
       if (chunk.sphere.center.distanceTo(cameraPosition) - CHUNK * 0.71 > limit) continue;
-      if (!frustum.intersectsSphere(chunk.sphere)) continue;
+      if (!everything && !frustum.intersectsSphere(chunk.sphere)) continue;
       scratch[visible] = c;
       visible += 1;
     }
@@ -1310,6 +1310,8 @@ export interface WorldScene {
   chestPosition: (id: number) => { x: number; z: number } | null;
   nearestChest: (x: number, z: number) => WorldChest | null;
   graces: readonly MapGrace[];
+  /** Only for tools/build-world-map.mjs, through the map lab. Never called by the game. */
+  prepareTopDown: (sunDirection: THREE.Vector3) => { ground: THREE.Object3D | null; sun: THREE.DirectionalLight };
 }
 
 export interface WorldOptions {
@@ -1369,6 +1371,10 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
 
   let mist: THREE.Mesh | null = null;
   let shafts: THREE.Mesh | null = null;
+  let fireGroup: THREE.Object3D | null = null;
+  let groundMesh: THREE.Object3D | null = null;
+  /** Set for the map bake: update() stops touching the scene, and nothing is culled. */
+  let topDown = false;
   const fireMaterials: THREE.ShaderMaterial[] = [];
   const fireLights: THREE.PointLight[] = [];
   const fires = MAP.fires ?? [];
@@ -1404,6 +1410,7 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
     textures.push(...groundTextures);
     ground.frustumCulled = false;
     scene.add(ground);
+    groundMesh = ground;
 
     mist = buildMist(shared, 64);
     scene.add(mist);
@@ -1417,6 +1424,7 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
     scene.add(shafts);
     const fireField = buildFires(shared, fires);
     scene.add(fireField.group);
+    fireGroup = fireField.group;
     fireMaterials.push(...fireField.materials);
     // A fixed number of lights, because adding one recompiles every shader in the scene.
     for (let i = 0; i < LIGHT_COUNT; i += 1) {
@@ -1562,7 +1570,7 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
     if (propSets.length === 0) return;
     viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     frustum.setFromProjectionMatrix(viewProjection);
-    cullProps(propSets, frustum, cameraPosition, mood.fogFar);
+    cullProps(propSets, frustum, cameraPosition, mood.fogFar, topDown);
   };
 
   const fogTarget = new THREE.Color();
@@ -1637,6 +1645,7 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
   };
 
   const update = (x?: number, z?: number) => {
+    if (topDown) return;
     if (x !== undefined && z !== undefined) {
       playerX = x;
       playerZ = z;
@@ -1717,6 +1726,34 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
   };
   update();
 
+  // The map is a view from straight above in plain daylight, so everything that exists for the
+  // view from the ground goes, and textures stop being crunchy, which would alias into noise.
+  const prepareTopDown = (sunDirection: THREE.Vector3) => {
+    topDown = true;
+    for (const object of [sky, motes, mist, shafts, fireGroup]) if (object) object.visible = false;
+    for (const chest of chests.values()) if (chest.glint) chest.glint.visible = false;
+    windTime.value = 0;
+    fog.near = 1e5;
+    fog.far = 2e5;
+    hazeOpen.value = 0;
+    castleFogCap.value = 0;
+    sun.position.copy(sunDirection).setLength(900);
+    sun.color.setRGB(1, 0.86, 0.66);
+    sun.intensity = 3.1;
+    hemisphere.color.setRGB(0.86, 0.84, 0.82);
+    hemisphere.groundColor.setRGB(0.3, 0.24, 0.17);
+    hemisphere.intensity = 0.95;
+    for (const light of fireLights) light.intensity = 0;
+    for (const texture of textures) {
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.generateMipmaps = true;
+      texture.anisotropy = 8;
+      texture.needsUpdate = true;
+    }
+    return { ground: groundMesh, sun };
+  };
+
   const setChestOpen = (id: number, open: boolean, animate: boolean) => {
     const chest = chests.get(id);
     if (!chest) return;
@@ -1746,6 +1783,7 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
       return best;
     },
     graces: withRocks ? MAP.graces : [],
+    prepareTopDown,
     dispose: () => {
       disposed = true;
       scene.onBeforeRender = () => {};
