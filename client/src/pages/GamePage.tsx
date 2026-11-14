@@ -1,7 +1,7 @@
 import { artUrl } from '../art';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { GameClient, type HudState } from '../game/GameClient';
+import { GameClient, type BossHud, type HudState } from '../game/GameClient';
 import type { ConnectionStatus } from '../game/net';
 import { BinaryDust } from '../components/BinaryDust';
 import { controlsFor } from '../components/Hud';
@@ -9,7 +9,10 @@ import { GraceMenu } from '../components/GraceMenu';
 import { Icon } from '../components/Icon';
 import { ActionGlyph, useInputDevice } from '../components/InputGlyph';
 import { WorldMap, WorldMapLegend } from '../components/WorldMap';
+import { getInputDevice } from '../game/inputDevice';
 import { useSession } from '../session';
+import { PadHints, type PadHint } from '../ui/PadHints';
+import '../styles/game-pad.css';
 
 const STATUS_MESSAGE: Partial<Record<ConnectionStatus, string>> = {
   connecting: 'Connecting to the server…',
@@ -19,6 +22,58 @@ const STATUS_MESSAGE: Partial<Record<ConnectionStatus, string>> = {
 };
 
 const BANNER_MS = 2600;
+
+/* The controller hint bars for each in-game screen. Nothing shows while playing. */
+const PAUSE_HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'confirm', label: 'Select' },
+  { button: 'back', label: 'Resume' },
+  { button: 'select', label: 'World map' },
+];
+/** A fallback: the grace menu can show its own bar (at priority 0 or more), which then replaces this. */
+const GRACE_HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'confirm', label: 'Select' },
+  { button: 'back', label: 'Back' },
+  { button: 'select', label: 'World map' },
+];
+const MAP_HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'confirm', label: 'Select' },
+  { button: 'back', label: 'Close map' },
+];
+/** The map can open over the grace menu, so its bar sits above anything the grace menu shows. */
+const MAP_HINTS_PRIORITY = 2;
+const GRACE_HINTS_PRIORITY = -0.5;
+
+/**
+ * Circle/B on a controller (ui/padNav.ts) sends 'padback' to the open screen's scope. This runs onBack for it.
+ * A component inside may mark its own nested scope, and then the event goes to that one and does not bubble:
+ * the capture listener catches it on the way down and runs onBack after the nested scope's own listeners,
+ * only if none of them handled it.
+ */
+function usePadBack(ref: RefObject<HTMLElement | null>, open: boolean, onBack: () => void): void {
+  const latest = useRef(onBack);
+  latest.current = onBack;
+  useEffect(() => {
+    const scope = ref.current;
+    if (!open || !scope) return;
+    const run = (event: Event) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      latest.current();
+    };
+    const capture = (event: Event) => {
+      if (event.target !== scope && event.target) event.target.addEventListener('padback', run, { once: true });
+    };
+    scope.addEventListener('padback', run);
+    scope.addEventListener('padback', capture, { capture: true });
+    return () => {
+      scope.removeEventListener('padback', run);
+      scope.removeEventListener('padback', capture, { capture: true });
+    };
+  }, [ref, open]);
+}
 const NOTICE_MS = 3600;
 
 function share(value: number, max: number): number {
@@ -32,6 +87,58 @@ function Bar({ kind, title, percent, tall }: { kind: string; title: string; perc
       {kind === 'health' && <span className="bar__chip" style={{ width: `${percent}%` }} />}
       <span className="bar__fill" style={{ width: `${percent}%` }} />
     </div>
+  );
+}
+
+/**
+ * The boss's name and health along the bottom of the screen, above your own bars. Under the health, a thin
+ * stance bar fills as hits build up. When it breaks it flashes and then shows the stun running out, with the
+ * critical hit prompt while you stand where an attack would land one.
+ */
+function BossBar({ boss }: { boss: BossHud }) {
+  const percent = Math.max(0, Math.min(100, boss.share));
+  const stance = Math.max(0, Math.min(100, boss.stunned ? boss.stun : boss.stance));
+  return (
+    <div className={`boss-hud${boss.fading ? ' boss-hud--fading' : ''}`} role="group" aria-label={`${boss.name}, ${Math.round(percent)} percent health`}>
+      <p className="boss-hud__name">{boss.name}</p>
+      <div className="boss-hud__track">
+        <span className="boss-hud__chip" style={{ width: `${percent}%` }} />
+        <span className="boss-hud__fill" style={{ width: `${percent}%` }} />
+      </div>
+      <div className={`boss-hud__stance${boss.stunned ? ' boss-hud__stance--broken' : ''}`} title="Stance">
+        <span className="boss-hud__stance-fill" style={{ width: `${stance}%` }} />
+        {boss.breaks > 0 && <span key={boss.breaks} className="boss-hud__stance-flash" />}
+      </div>
+      {boss.stunned && (
+        <p className={`boss-hud__crit${boss.critReady ? ' boss-hud__crit--ready' : ''}`} role="status">
+          {boss.critReady ? <><ActionGlyph action="attack" /> Critical hit</> : 'Stance broken. Get close to its head.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A checkbox setting. On a controller the whole row is the item, so the highlight frames the words as well
+ * as the box, and pressing it flips the setting without sending focus into the little box. A mouse click or
+ * the keyboard work on the checkbox as usual.
+ */
+function SettingToggle({ checked, onChange, children }: { checked: boolean; onChange: (on: boolean) => void; children: ReactNode }) {
+  return (
+    <label
+      data-pad-item
+      className={checked ? 'is-on' : undefined}
+      onClick={(event) => {
+        // A controller's press is a click with no mouse behind it, aimed at the row itself.
+        if (event.detail !== 0 || event.target !== event.currentTarget) return;
+        event.preventDefault();
+        onChange(!checked);
+      }}
+    >
+      <input type="checkbox" data-pad-skip checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      {children}
+      <span className="game__setting-state" aria-hidden="true">{checked ? 'On' : 'Off'}</span>
+    </label>
   );
 }
 
@@ -61,6 +168,9 @@ export function GamePage() {
   const graceElement = useRef<HTMLDivElement>(null);
   const mapElement = useRef<HTMLDivElement>(null);
   const graceBack = useRef<(() => boolean) | null>(null);
+  /** Whether the game was being played when the map opened, so closing it goes back to where you were. */
+  const mapFromPlay = useRef(false);
+  const lockedRef = useRef(false);
 
   const showMap = useCallback((open: boolean) => {
     mapRef.current = open;
@@ -72,14 +182,19 @@ export function GamePage() {
     setGraceId(grace);
   }, []);
 
-  /** The map closes back to the grace menu if you're sitting, and otherwise back to the game. */
+  /**
+   * The map closes back to the grace menu if you're sitting, and otherwise back to the game. On a controller,
+   * a map opened from the pause card closes back to the pause card.
+   */
   const toggleMap = useCallback(() => {
     const client = clientRef.current;
     if (!client) return;
     if (mapRef.current) {
       showMap(false);
-      if (graceRef.current === 0) client.closeOverlay(true);
+      // The keyboard keeps its old behaviour, where closing the map always goes back to playing.
+      if (graceRef.current === 0) client.closeOverlay(mapFromPlay.current || getInputDevice() === 'keyboard');
     } else {
+      mapFromPlay.current = lockedRef.current;
       showMap(true);
       client.openOverlay();
     }
@@ -92,6 +207,19 @@ export function GamePage() {
     showGrace(0);
     client.closeOverlay(true);
   }, [showGrace]);
+
+  /**
+   * Backing out one step, from Circle/B (through padNav), Options/Menu (through the game's onMenu) and Esc:
+   * the map first, then the grace menu's own submenus, then standing up, and from the pause card back to play.
+   */
+  const backOut = useCallback(() => {
+    const client = clientRef.current;
+    if (!client) return;
+    if (mapRef.current) toggleMap();
+    else if (graceRef.current > 0) {
+      if (!graceBack.current?.()) standUp();
+    } else if (menuRef.current) client.playWithController();
+  }, [standUp, toggleMap]);
 
   const hasCharacter = !!user?.hasCharacter;
 
@@ -120,7 +248,10 @@ export function GamePage() {
         if (next === 'lost' || next === 'expired') void refresh();
       },
       onHud: setHud,
-      onPointerLock: setLocked,
+      onPointerLock: (next) => {
+        lockedRef.current = next;
+        setLocked(next);
+      },
       onBinaryDust: (amount, pulse) => {
         setDust(amount);
         if (pulse) dustRef.current?.animate(
@@ -144,37 +275,9 @@ export function GamePage() {
         else if (!mapRef.current) clientRef.current?.closeOverlay(true);
       },
       onMapKey: toggleMap,
-      onMenu: (nav) => {
-        const overlay = mapRef.current ? mapElement.current : graceRef.current > 0 ? graceElement.current : null;
-        const card = overlay ?? menuRef.current;
-        if (!card) return;
-        const items = [...card.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input')];
-        const current = items.indexOf(document.activeElement as HTMLElement);
-        if (overlay) {
-          if (nav === 'back') {
-            if (mapRef.current) toggleMap();
-            else if (!graceBack.current?.()) standUp();
-          } else if (nav === 'confirm') {
-            if (current >= 0) items[current].click();
-            else items[0]?.focus();
-          } else {
-            const step = nav === 'down' ? 1 : -1;
-            const target = items[current < 0 ? 0 : (current + step + items.length) % items.length];
-            target?.focus();
-            target?.scrollIntoView({ block: 'nearest' });
-          }
-          return;
-        }
-        if (nav === 'up' || nav === 'down') {
-          const step = nav === 'down' ? 1 : -1;
-          items[current < 0 ? 0 : (current + step + items.length) % items.length]?.focus();
-        } else if (nav === 'back' || current <= 0) {
-          // The first item is the Play button, which on a controller needs no pointer lock.
-          client.playWithController();
-        } else {
-          items[current].click();
-        }
-      },
+      // Only 'back' comes now: Options/Menu with a menu open, or Esc with an overlay open. Moving around
+      // the menus, pressing and Circle/B all belong to the site's controller layer (ui/padNav.ts).
+      onMenu: backOut,
     });
     clientRef.current = client;
     setVhsOn(client.vhsOn);
@@ -185,15 +288,24 @@ export function GamePage() {
       clientRef.current = null;
       client.dispose();
     };
-  }, [hasCharacter, navigate, refresh, showGrace, showMap, standUp, toggleMap]);
-
-  // Only the first time it opens: the map has one button, and a controller needs it to have focus.
-  useEffect(() => {
-    if (mapOpen) mapElement.current?.querySelector('button')?.focus();
-  }, [mapOpen]);
+  }, [backOut, hasCharacter, navigate, refresh, showGrace, showMap, standUp, toggleMap]);
 
   const message = STATUS_MESSAGE[status];
   const dead = !!hud && hud.deadSeconds > 0;
+  const graceShown = graceId > 0 && !!hud?.me && status === 'open';
+  const mapShown = mapOpen && status === 'open';
+  const pauseShown = !locked && status === 'open' && graceId === 0 && !mapOpen;
+  usePadBack(graceElement, graceShown, backOut);
+  usePadBack(mapElement, mapShown, backOut);
+  usePadBack(menuRef, pauseShown, backOut);
+
+  /** A mouse click asks for pointer lock. A controller (or the keyboard, while a controller is in use) needs none. */
+  const play = (event: MouseEvent) => {
+    const client = clientRef.current;
+    if (!client) return;
+    if (event.detail === 0 && getInputDevice() !== 'keyboard') client.playWithController();
+    else client.requestPointerLock();
+  };
   const mapView = useCallback(() => clientRef.current?.mapView() ?? { me: null, others: [] }, []);
 
   return (
@@ -213,6 +325,8 @@ export function GamePage() {
             <Bar kind="stamina" title="Stamina" percent={hud ? share(hud.stamina, hud.maxStamina) : 100} />
           </div>
         </div>
+
+        {hud?.boss && <BossBar boss={hud.boss} />}
 
         <div className="game__dust" title="Binary Dust. Spend it to raise your stats.">
           <BinaryDust />
@@ -235,7 +349,15 @@ export function GamePage() {
         </div>
       </div>
 
-      {message && <p className="game__message" role="status">{message}</p>}
+      {message && (status === 'lost' || status === 'replaced') ? (
+        // Nothing else on screen can be pressed while the game is stopped, so give a way out to the site.
+        <div className="game__message game__message--stuck" role="status" data-pad-scope="stopped">
+          <p>{message}</p>
+          <Link to="/" className="btn btn--small" data-pad-default>Back to home</Link>
+        </div>
+      ) : (
+        message && <p className="game__message" role="status">{message}</p>
+      )}
 
       {hud?.prompt && locked && <p className="game__prompt">Press <ActionGlyph action="interact" /> {hud.prompt}</p>}
       {notice && <p key={notice.key} className="game__notice" role="status">{notice.text}</p>}
@@ -252,8 +374,9 @@ export function GamePage() {
         </div>
       )}
 
-      {graceId > 0 && hud?.me && status === 'open' && (
-        <div ref={graceElement} className="grace-screen">
+      {graceShown && hud?.me && (
+        <div ref={graceElement} className="grace-screen" data-pad-scope="grace">
+          <PadHints hints={GRACE_HINTS} priority={GRACE_HINTS_PRIORITY} />
           <GraceMenu
             grace={graceId}
             me={hud.me}
@@ -269,24 +392,31 @@ export function GamePage() {
         </div>
       )}
 
-      {mapOpen && status === 'open' && (
-        <div ref={mapElement} className="map-screen">
+      {mapShown && (
+        <div ref={mapElement} className="map-screen" data-pad-scope="map">
+          <PadHints hints={MAP_HINTS} priority={MAP_HINTS_PRIORITY} />
           <div className="map-screen__card">
             <header className="map-screen__head">
               <h1>World Map</h1>
               <button type="button" className="btn btn--primary btn--small" onClick={toggleMap}>Close</button>
             </header>
-            <WorldMap view={mapView} lit={hud?.graces ?? []} here={graceId > 0 ? graceId : undefined} />
+            <WorldMap
+              view={mapView}
+              lit={hud?.graces ?? []}
+              here={graceId > 0 ? graceId : undefined}
+              onPick={graceId > 0 ? (grace) => clientRef.current?.travelTo(grace) : undefined}
+            />
             <WorldMapLegend />
           </div>
         </div>
       )}
 
-      {!locked && status === 'open' && graceId === 0 && !mapOpen && (
+      {pauseShown && (
         <div className="game__menu">
-          <div ref={menuRef} className="game__menu-card">
+          <PadHints hints={PAUSE_HINTS} />
+          <div ref={menuRef} className="game__menu-card" data-pad-scope="pause">
             <h1>Paused</h1>
-            <button type="button" className="btn btn--primary btn--large" onClick={() => clientRef.current?.requestPointerLock()}>
+            <button type="button" className="btn btn--primary btn--large game__play" data-pad-default onClick={play}>
               {device === 'keyboard' ? 'Click to Play' : <>Press <ActionGlyph action="confirm" /> to Play</>}
             </button>
             <dl className="game__keys">
@@ -297,29 +427,26 @@ export function GamePage() {
                 </div>
               ))}
             </dl>
+            {/* On a controller the whole row is the item, so the highlight frames the words as well as the box. */}
             <div className="game__settings">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={vhsOn}
-                  onChange={(event) => {
-                    clientRef.current?.setVhs(event.target.checked);
-                    setVhsOn(event.target.checked);
-                  }}
-                />
+              <SettingToggle
+                checked={vhsOn}
+                onChange={(on) => {
+                  clientRef.current?.setVhs(on);
+                  setVhsOn(on);
+                }}
+              >
                 VHS tape look
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={reduceShake}
-                  onChange={(event) => {
-                    clientRef.current?.setReduceShake(event.target.checked);
-                    setReduceShake(event.target.checked);
-                  }}
-                />
+              </SettingToggle>
+              <SettingToggle
+                checked={reduceShake}
+                onChange={(on) => {
+                  clientRef.current?.setReduceShake(on);
+                  setReduceShake(on);
+                }}
+              >
                 Reduce camera shake
-              </label>
+              </SettingToggle>
             </div>
             <div className="game__menu-links">
               <Link to="/create">Edit Character</Link>

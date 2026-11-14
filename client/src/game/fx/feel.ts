@@ -70,17 +70,16 @@ export function takeHit(parts: FeelParts, fromYaw: number, share: number): void 
 export type MoveKind = 'still' | 'walk' | 'run' | 'roll';
 
 // Seconds between puffs. Running puffs twice per footfall, or the trail reads as separate balls.
-const PUFF_SECONDS: Record<MoveKind, number> = { still: 0, walk: 0.47, run: 0.15, roll: 0.075 };
+const PUFF_SECONDS: Record<MoveKind, number> = { still: 0, walk: 0, run: 0.15, roll: 0.075 };
 
 /**
- * Dust and footsteps for one character, driven by how it is moving now. Keep one per character and
- * call update every frame with its feet. Time based instead of tied to the animation's footfalls,
- * so it works for every model and needs nothing from the animation system.
+ * Dust and footsteps for one character. Keep one per character and call update every frame with its
+ * feet. Running and rolling dust is time based, because it reads as a trail. Call step whenever the
+ * animation sets a foot down.
  */
 export class FootTrail {
   private last: MoveKind = 'still';
   private wait = 0;
-  private puffs = 0;
 
   constructor(
     private readonly parts: FeelParts,
@@ -88,7 +87,7 @@ export class FootTrail {
     private readonly mine: boolean,
   ) {}
 
-  update(seconds: number, feet: Position, kind: MoveKind, surface: FootSurface = 'dirt'): void {
+  update(seconds: number, feet: Position, kind: MoveKind): void {
     const started = kind !== this.last;
     const wasRoll = this.last === 'roll';
     this.last = kind;
@@ -98,7 +97,7 @@ export class FootTrail {
     } else if (wasRoll && started) {
       this.parts.fx.footDust(feet, 'land');
     }
-    if (kind === 'still') {
+    if (kind === 'still' || kind === 'walk') {
       this.wait = 0;
       return;
     }
@@ -106,10 +105,12 @@ export class FootTrail {
     if (this.wait > 0) return;
     this.wait = PUFF_SECONDS[kind];
     this.parts.fx.footDust(feet, kind);
-    this.puffs += 1;
-    if (kind === 'walk' || (kind === 'run' && this.puffs % 2 === 0)) {
-      sound.footstep(surface, { x: feet.x, z: feet.z, running: kind === 'run' });
-    }
     if (this.mine) this.parts.vhs.echo(kind === 'roll' ? 0.8 : kind === 'run' ? 0.3 : 0);
+  }
+
+  /** A foot just came down. */
+  step(feet: Position, kind: MoveKind, surface: FootSurface): void {
+    sound.footstep(surface, { x: feet.x, z: feet.z, running: kind === 'run' });
+    if (kind === 'walk') this.parts.fx.footDust(feet, 'walk');
   }
 }

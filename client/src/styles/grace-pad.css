@@ -1,0 +1,280 @@
+/*
+ * The Binary Grace menu and the character sheet on a controller. Everything that changes the look
+ * is under html.pad-active, which ui/padNav.ts sets while a controller is the device in use, so the
+ * mouse and keyboard see these screens as before.
+ */
+
+/* Only shown on a controller. */
+.grace-pad__only {
+  display: none;
+}
+
+html.pad-active .grace-pad__only {
+  display: revert;
+}
+
+html.pad-active span.grace-pad__only {
+  display: inline-block;
+}
+
+html.pad-active p.grace-pad__only {
+  display: flex;
+}
+
+/* ---------- Grace menu ---------- */
+
+.grace-menu__content {
+  display: grid;
+}
+
+.grace-menu__dust-plan {
+  margin-left: 6px;
+  color: var(--text-2);
+  font-size: 0.92rem;
+}
+
+/* Keeps Stand up and the end of each list clear of the hint bar along the bottom. */
+html.pad-active .grace-menu {
+  padding-left: 34px;
+  padding-bottom: 78px;
+  scroll-padding-bottom: 78px;
+}
+
+html.pad-active .grace-menu__tab {
+  min-height: 40px;
+  padding: 8px 12px;
+}
+
+html.pad-active .grace-menu__tab--on {
+  background: linear-gradient(180deg, rgba(236, 200, 120, 0.26), rgba(201, 164, 92, 0.12));
+  color: var(--gold-bright);
+}
+
+/* The mouse's Raise buttons step aside: on a controller the whole row is the control. */
+html.pad-active .grace-stat__raise {
+  display: none;
+}
+
+.grace-pad__how {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.grace-stat {
+  transition: background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+html.pad-active .grace-stat {
+  padding: 12px 14px;
+  cursor: default;
+}
+
+html.pad-active .grace-stat:focus {
+  background: linear-gradient(90deg, rgba(236, 200, 120, 0.16), rgba(201, 164, 92, 0.05) 70%, rgba(8, 7, 6, 0.5));
+}
+
+html.pad-active .grace-stat--planned {
+  box-shadow: inset 3px 0 0 var(--gold-bright), inset 0 0 0 1px var(--gold);
+}
+
+.grace-stat__numbers {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grace-stat__arrow {
+  min-width: 0.7em;
+  text-align: center;
+  font-size: 1.25rem;
+  line-height: 1;
+  color: var(--gold-bright);
+  opacity: 0.25;
+  transition: opacity 0.16s ease, translate 0.16s ease;
+}
+
+/* The arrows only light up on the stat being changed, and only the ways it can go. */
+html.pad-active .grace-stat:focus .grace-stat__arrow {
+  opacity: 1;
+  text-shadow: 0 0 10px rgba(236, 200, 120, 0.8);
+}
+
+html.pad-active .grace-stat:focus .grace-stat__arrow[data-off] {
+  opacity: 0.18;
+  text-shadow: none;
+}
+
+.grace-stat__cost {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.grace-stat__cost strong {
+  color: var(--gold-pale);
+}
+
+/* On the stat being looked at, the price stands out. */
+html.pad-active .grace-stat:focus .grace-stat__cost {
+  color: var(--gold-pale);
+  font-size: 1rem;
+}
+
+html.pad-active .grace-stat:focus .grace-stat__cost strong {
+  color: var(--gold-bright);
+  text-shadow: 0 0 12px var(--glow);
+}
+
+.grace-stat__cost--short,
+html.pad-active .grace-stat:focus .grace-stat__cost--short {
+  color: #d99a86;
+}
+
+.grace-stat__planned {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--gold);
+  color: var(--gold-bright);
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+}
+
+/* The plan stays in view at the foot of the menu while the stats scroll past. */
+.grace-plan {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, rgba(30, 25, 17, 0.97), rgba(16, 13, 10, 0.98));
+  box-shadow:
+    inset 0 0 0 1px var(--gold),
+    0 -10px 24px rgba(0, 0, 0, 0.55);
+}
+
+.grace-plan__text {
+  margin: 0;
+  color: var(--gold-pale);
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.grace-plan__text strong {
+  color: var(--gold-bright);
+}
+
+/*
+ * The plan sits over the foot of the list, so a highlighted stat stops scrolling above it. The menu's own
+ * bottom padding already clears the hint bar, and sticky offsets count from inside that padding.
+ */
+html.pad-active .grace-menu__body:has(.grace-plan) .grace-stat {
+  scroll-margin-bottom: 110px;
+}
+
+.grace-plan__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Travel: one clear column, with where you are now marked and still readable. */
+html.pad-active .grace-travel {
+  gap: 6px;
+}
+
+html.pad-active .grace-travel__item {
+  min-height: 42px;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.grace-travel__item--here,
+.grace-travel__item--here:hover {
+  opacity: 0.6;
+  cursor: default;
+  filter: none;
+  transform: none;
+}
+
+html.pad-active .grace-travel__item--here {
+  opacity: 0.85;
+  box-shadow: inset 3px 0 0 var(--gold);
+}
+
+html.pad-active .grace-travel__item:focus {
+  background: linear-gradient(90deg, rgba(236, 200, 120, 0.28), rgba(201, 164, 92, 0.08));
+  color: var(--gold-bright);
+}
+
+/* Characters */
+html.pad-active .grace-save .btn {
+  min-height: 38px;
+}
+
+/* ---------- Character sheet ---------- */
+
+html.pad-active .sheet__stat {
+  padding-inline: 8px;
+  margin-inline: -8px;
+}
+
+html.pad-active .sheet__stat:focus {
+  background: linear-gradient(90deg, rgba(236, 200, 120, 0.12), transparent);
+}
+
+.sheet__medal {
+  position: relative;
+  padding: 6px 4px;
+}
+
+.sheet__medal-tip {
+  display: none;
+}
+
+/* A controller has no hover, so the description shows under the medal that is highlighted. */
+html.pad-active .sheet__medal:focus .sheet__medal-tip {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  width: max(220px, 100%);
+  padding: 10px 12px;
+  translate: -50% 0;
+  background: rgba(12, 10, 8, 0.97);
+  box-shadow:
+    inset 0 0 0 1px var(--gold),
+    0 8px 24px rgba(0, 0, 0, 0.7);
+  color: var(--text-2);
+  font-size: 0.92rem;
+  line-height: 1.3;
+  text-align: left;
+  pointer-events: none;
+}
+
+.sheet__medal-tip strong {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.sheet__medal[data-unlocked='true'] .sheet__medal-tip strong {
+  color: var(--gold-bright);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grace-stat,
+  .grace-stat__arrow {
+    transition: none;
+  }
+}

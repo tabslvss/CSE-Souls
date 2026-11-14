@@ -1,4 +1,4 @@
-import type { AttackKey, Pose, WeaponMoves } from './types';
+import type { AttackKey, CriticalMoves, Pose, Vec3, WeaponMoves } from './types';
 
 /*
  * Blades: quick, clean and committed. Each attack in a list starts where the one before it ended, so
@@ -550,6 +550,197 @@ const KATANA_THRUST: AttackKey[] = [
   },
 ];
 
+
+/*
+ * Katana critical: the delayed iai cut. Sheathe at the hip and sink, hold dead still, then one dash straight
+ * through the boss with a single horizontal draw, and stand beyond it with the blade out. The guard clicks
+ * home at the impact, and that is when the cuts land behind.
+ */
+
+/** The left hand closed around the scabbard's mouth, just past the guard, by the front of the left hip. */
+const SCABBARD_HAND: Vec3 = [-0.13, -0.24, 0.17];
+/** Sheathed: the blade runs back, out and down past the left hip, edge up, the guard against the left hand. */
+const SHEATH_HEAD: Vec3 = [-0.745, -0.298, -0.596];
+const SHEATH_EDGE: Vec3 = [0, 0.9, -0.45];
+/** The grip sits 12 cm behind the left hand along the blade, so the hand wraps the blade's back by the guard. */
+const SHEATH_GRIP: Vec3 = [
+  SCABBARD_HAND[0] - 0.12 * SHEATH_HEAD[0],
+  SCABBARD_HAND[1] - 0.12 * SHEATH_HEAD[1],
+  SCABBARD_HAND[2] - 0.12 * SHEATH_HEAD[2],
+];
+/** The tip just inside the scabbard's mouth, the blade's back along the left hand: 41 cm of slide to go. */
+const SHEATH_MOUTH_GRIP: Vec3 = [
+  SCABBARD_HAND[0] - 0.41 * SHEATH_HEAD[0],
+  SCABBARD_HAND[1] - 0.41 * SHEATH_HEAD[1],
+  SCABBARD_HAND[2] - 0.41 * SHEATH_HEAD[2],
+];
+const SCABBARD = { position: SCABBARD_HAND, fingers: 0.78 };
+
+/** Where the draw cut ends: the arm out to the right, the blade level and a little behind, edge trailing the cut. */
+const KATANA_OUT = { grip: [0.5, -0.06, 0.2] as Vec3, head: [0.95, -0.2, -0.25] as Vec3, edge: [-0.25, 0, -0.95] as Vec3 };
+
+const KATANA_CRITICAL: CriticalMoves = {
+  travel: 9,
+  // Still until the dash, then 9 m in 0.08 of the critical (0.22 s), braking hard into the landing.
+  rootPath: [
+    { at: 0.42, forward: 0 },
+    { at: 0.445, forward: 0.8, ease: 'easeIn' },
+    { at: 0.48, forward: 7.4, ease: 'linear' },
+    { at: 0.5, forward: 9, ease: 'easeOut' },
+  ],
+  marks: { crouch: 0.15, dash: 0.42, draw: 0.445, cut: 0.47, through: 0.5, sheath: 0.6, glance: 0.78 },
+  keys: [
+    // Commit: the blade turns left, the hands come down toward the left hip, the knees start to give.
+    {
+      at: 0.08,
+      grip: [0.04, -0.18, 0.3],
+      head: [-0.7, 0.2, 0.68],
+      edge: [0.3, 0.95, 0.03],
+      // The left hand lets go first and goes to the scabbard, so the right hand turns the blade alone.
+      oneHand: true,
+      freeHand: SCABBARD,
+      hips: [0, 0.27, 0.03],
+      hipTurn: -0.28,
+      lean: 0.22,
+      headPitch: 0.3,
+    },
+    // Crouch: sheathed at the hip, the left hand on the scabbard, sunk very low over the right foot, head down.
+    {
+      at: 0.15,
+      ease: 'easeOut',
+      grip: SHEATH_GRIP,
+      head: SHEATH_HEAD,
+      edge: SHEATH_EDGE,
+      oneHand: true,
+      freeHand: SCABBARD,
+      hips: [0, 0.42, 0.08],
+      hipTurn: -0.36,
+      hipTilt: 0.3,
+      footR: [0.14, 0.5, 0],
+      footL: [-0.2, -0.46, 0.07],
+      toeL: 0.6,
+      turn: -0.3,
+      lean: 0.45,
+      headFollow: 0,
+      headPitch: 0.55,
+    },
+    // The hold: coiled and still for 0.6 s, only a breath and a slow lean forward, the eyes coming up.
+    { at: 0.2, hips: [0, 0.44, 0.09], lean: 0.47 },
+    { at: 0.28, hips: [0, 0.43, 0.11], lean: 0.5, headPitch: 0.48 },
+    { at: 0.36, hips: [0, 0.455, 0.13], lean: 0.53, headPitch: 0.36 },
+    // The thumb pushes the guard out of the mouth, the back heel comes up: everything loaded.
+    {
+      at: 0.42,
+      ease: 'easeIn',
+      grip: [-0.01, -0.19, 0.27],
+      hips: [0, 0.47, 0.15],
+      lean: 0.58,
+      footL: [-0.2, -0.46, 0.08],
+      headPitch: 0.3,
+    },
+    // Launch: the back leg drives straight, the body goes nearly flat, and the blade leaves the scabbard.
+    {
+      at: 0.445,
+      ease: 'easeIn',
+      grip: [0.06, -0.14, 0.42],
+      head: [-0.6, -0.1, 0.79],
+      edge: [0.79, 0, 0.6],
+      hips: [0, 0.5, 0.32],
+      hipTurn: -0.2,
+      hipTilt: 0.7,
+      footR: [0.14, 0.42, 0.2],
+      footL: [-0.2, -0.48, 0.08],
+      turn: -0.4,
+      lean: 1.15,
+      headPitch: -0.45,
+    },
+    // Through the boss: one level cut, the edge leading, the body flat and both feet off the ground.
+    {
+      at: 0.47,
+      ease: 'linear',
+      grip: [0.22, -0.06, 0.45],
+      head: [0.2, 0, 1],
+      edge: [1, 0, -0.2],
+      hips: [0, 0.48, 0.32],
+      hipTurn: 0,
+      footR: [0.14, 0.5, 0.24],
+      footL: [-0.2, -0.45, 0.2],
+      turn: 0.1,
+      lean: 1.2,
+      headPitch: -0.5,
+    },
+    // Lands beyond it, low, back to the boss, the blade carried out to the right side.
+    {
+      at: 0.5,
+      ease: 'easeOut',
+      ...KATANA_OUT,
+      hips: [0, 0.36, 0.15],
+      hipTurn: 0.1,
+      hipTilt: 0.3,
+      footR: [0.15, 0.52, 0],
+      footL: [-0.2, -0.44, 0.06],
+      turn: 0.45,
+      lean: 0.5,
+      headPitch: 0.15,
+    },
+    // Stillness: the blade held out, motionless; only the weight settling a centimetre.
+    { at: 0.54, hips: [0, 0.35, 0.15], lean: 0.48 },
+    // The blade comes round in front and across, its back finding the left hand...
+    { at: 0.556, ease: 'linear', grip: [0.3, -0.1, 0.4], head: [0.25, -0.15, 0.96], edge: [0, 0.99, 0.15], turn: 0.25 },
+    { at: 0.572, ease: 'linear', grip: [0.22, -0.11, 0.42], head: [-0.9, -0.2, 0.38], edge: [0.2, 0.98, 0], turn: 0.05 },
+    // ...the tip drops into the mouth...
+    { at: 0.586, ease: 'easeOut', grip: SHEATH_MOUTH_GRIP, head: SHEATH_HEAD, edge: SHEATH_EDGE, turn: -0.1 },
+    // ...and slides home: the guard clicks at the impact, the cuts open on the boss behind.
+    {
+      at: 0.6,
+      ease: 'easeIn',
+      impact: true,
+      grip: SHEATH_GRIP,
+      head: SHEATH_HEAD,
+      edge: SHEATH_EDGE,
+      hips: [0, 0.34, 0.14],
+      turn: -0.2,
+      lean: 0.46,
+    },
+    // One beat of stillness.
+    { at: 0.68, ease: 'hold' },
+    // Rise, and look back over the left shoulder at what is behind.
+    {
+      at: 0.78,
+      hips: [0, 0.2, 0.04],
+      hipTurn: -0.55,
+      hipTilt: 0.12,
+      footR: [0.15, 0.4, 0],
+      footL: [-0.18, -0.3, 0.04],
+      turn: -1.3,
+      lean: 0.12,
+      headFollow: 1,
+      headPitch: 0.05,
+    },
+    // Draws back out to guard, the left hand rejoining the handle, and turns front again.
+    {
+      at: 0.88,
+      grip: [0.0, -0.18, 0.34],
+      head: [-0.8, 0.15, 0.58],
+      edge: [0.25, 0.97, 0.1],
+      footR: [0.13, 0.28, 0],
+      footL: [-0.16, -0.25, 0.05],
+      turn: -0.6,
+      hipTurn: -0.35,
+      headFollow: 0.5,
+    },
+    {
+      at: 0.97,
+      ease: 'easeOut',
+      oneHand: false,
+      grip: [0.05, -0.18, 0.36],
+      head: [-0.02, 0.46, 0.89],
+      edge: [0, -0.89, 0.46],
+      ...KATANA_READY,
+    },
+  ],
+};
+
 export const KATANA: WeaponMoves = {
   idleClip: 'Idle_Loop',
   runClip: 'Sprint_Loop',
@@ -557,6 +748,7 @@ export const KATANA: WeaponMoves = {
   life: { sink: 0.02, shift: 0.024, drift: 0.075, handLag: 0.5, walkWidth: 0.09 },
   stance: { idle: KATANA_IDLE, walk: KATANA_WALK, run: KATANA_RUN },
   attacks: [{ keys: KATANA_CUT }, { keys: KATANA_RETURN }, { keys: KATANA_THRUST }],
+  critical: KATANA_CRITICAL,
 };
 
 /*
@@ -1196,10 +1388,150 @@ const LONGSWORD_CLEAVE: AttackKey[] = [
   },
 ];
 
+
+/*
+ * Longsword critical: a duelist's flurry. Three fast feints at the boss, a withdraw to the ear with the free
+ * hand pointing the line, then one enormous bounding lunge at full stretch, and a wrench back out.
+ */
+
+/** A feint: a quick extension from the shoulder, the front heel tapping. Each one takes a slightly different line. */
+const jab = (at: number, head: Vec3): AttackKey => ({
+  at,
+  ease: 'easeIn',
+  grip: [0.18, -0.07, 0.55],
+  head,
+  edge: [0.1, -1, 0.1],
+  hips: [0, 0.27, 0.06],
+  footR: [0.15, 0.42, 0],
+  lean: 0.2,
+});
+/** Back in guard between feints. */
+const recoil = (at: number): AttackKey => ({
+  at,
+  ease: 'easeOut',
+  grip: [0.24, -0.12, 0.3],
+  head: [-0.05, 0.12, 0.99],
+  edge: [0.1, -0.99, 0.12],
+  hips: [0, 0.28, -0.03],
+  footR: [0.15, 0.42, 0.05],
+  lean: 0.12,
+});
+
+const LONGSWORD_CRITICAL: CriticalMoves = {
+  travel: 1.9,
+  // A bound: 1.9 m in the strike itself, so the point reaches the boss 4 m away.
+  rootPath: [
+    { at: 0.555, forward: 0 },
+    { at: 0.6, forward: 1.9, ease: 'easeIn' },
+  ],
+  marks: { jab1: 0.3, jab2: 0.38, jab3: 0.46, cock: 0.48, lunge: 0.555, thrust: 0.6, wrench: 0.7 },
+  keys: [
+    // Commit: a lifted step of the front foot into a deep, side-on guard, point on the boss, back arm up.
+    {
+      at: 0.07,
+      footR: [0.15, 0.32, 0.12],
+      hips: [0, 0.24, -0.03],
+      turn: -0.5,
+      hipTurn: -0.4,
+    },
+    {
+      at: 0.14,
+      grip: [0.24, -0.12, 0.3],
+      head: [-0.05, 0.12, 0.99],
+      edge: [0.1, -0.99, 0.12],
+      freeHand: { position: [-0.3, 0.12, -0.08], fingers: 0.35 },
+      hips: [0, 0.28, -0.04],
+      hipTurn: -0.45,
+      hipTilt: 0.1,
+      footR: [0.15, 0.42, 0],
+      footL: [-0.18, -0.24, 0.04],
+      turn: -0.62,
+      lean: 0.12,
+      headFollow: 0,
+      headPitch: 0.15,
+    },
+    { at: 0.24, hips: [0, 0.285, -0.035] },
+    // Three feints: high, low, high.
+    jab(0.3, [-0.04, 0.12, 1]),
+    recoil(0.34),
+    jab(0.38, [0.02, -0.06, 1]),
+    recoil(0.42),
+    jab(0.46, [-0.06, 0.1, 1]),
+    // Withdraw: the sword cocked back by the right ear, point on the line, the free hand pointing it out.
+    {
+      at: 0.48,
+      ease: 'easeOut',
+      grip: [0.2, 0.17, -0.02],
+      head: [-0.1, -0.08, 1],
+      edge: [0, -1, -0.08],
+      freeHand: { position: [-0.08, 0.0, 0.3], fingers: 0.08 },
+      hips: [0, 0.31, -0.12],
+      hipTurn: -0.5,
+      footR: [0.15, 0.42, 0],
+      turn: -0.78,
+      lean: 0.02,
+    },
+    // The hold: a held breath, the point trembling a few millimetres.
+    { at: 0.515, grip: [0.204, 0.173, -0.024], head: [-0.095, -0.07, 1], hips: [0, 0.315, -0.13] },
+    { at: 0.545, grip: [0.198, 0.168, -0.026], head: [-0.1, -0.085, 1], hips: [0, 0.32, -0.135] },
+    // The lunge leaves the ground: the back leg throws, both feet off.
+    {
+      at: 0.575,
+      ease: 'linear',
+      grip: [0.19, 0.06, 0.3],
+      head: [-0.06, -0.03, 1],
+      edge: [0.05, -1, -0.03],
+      freeHand: { position: [-0.2, -0.1, -0.15], fingers: 0.2 },
+      hips: [0, 0.34, 0.25],
+      hipTurn: -0.55,
+      footR: [0.15, 0.75, 0.2],
+      footL: [-0.18, -0.3, 0.18],
+      turn: -0.9,
+      lean: 0.2,
+    },
+    // Full extension: the front foot stamps far out, the arm, blade and back leg in one line, free hand flung back.
+    {
+      at: 0.6,
+      ease: 'easeIn',
+      impact: true,
+      grip: [0.17, -0.02, 0.6],
+      head: [-0.03, 0, 1],
+      edge: [0.1, -1, 0],
+      freeHand: { position: [-0.32, -0.28, -0.36], fingers: 0.15 },
+      hips: [0, 0.36, 0.32],
+      hipTurn: -0.62,
+      hipTilt: 0.16,
+      footR: [0.15, 0.98, 0],
+      footL: [-0.2, -0.36, 0.12],
+      turn: -1.0,
+      lean: 0.34,
+    },
+    // Drives on the point, the back foot landing.
+    { at: 0.64, ease: 'linear', grip: [0.165, -0.03, 0.62], hips: [0, 0.38, 0.34], footL: [-0.2, -0.37, 0.04], lean: 0.36 },
+    // The wrench: yanked out and back, the tip flicking up, the front foot snapping back.
+    {
+      at: 0.7,
+      ease: 'easeOut',
+      grip: [0.3, 0.02, 0.12],
+      head: [0.25, 0.3, 0.92],
+      edge: [0.05, -0.95, 0.3],
+      freeHand: { position: [-0.24, -0.1, 0.12], fingers: 0.5 },
+      hips: [0, 0.3, 0.14],
+      hipTurn: -0.4,
+      footR: [0.15, 0.62, 0.15],
+      turn: -0.5,
+      lean: 0.1,
+    },
+    { at: 0.82, footR: [0.15, 0.3, 0], footL: [-0.17, -0.24, 0.14], hips: [0, 0.22, 0.03], turn: -0.4, hipTurn: -0.32 },
+    { at: 0.96, ease: 'easeOut', ...LONGSWORD_IDLE },
+  ],
+};
+
 export const LONGSWORD: WeaponMoves = {
   idleClip: 'Idle_Loop',
   runClip: 'Sprint_Loop',
   life: { sink: 0.02, shift: 0.024, drift: 0.06, handLag: 0.7, walkWidth: 0.09 },
   stance: { idle: LONGSWORD_IDLE, walk: LONGSWORD_WALK, run: LONGSWORD_RUN },
   attacks: [{ keys: LONGSWORD_CUT }, { keys: LONGSWORD_RETURN }, { keys: LONGSWORD_CLEAVE }],
+  critical: LONGSWORD_CRITICAL,
 };

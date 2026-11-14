@@ -14,6 +14,8 @@ export interface ProgressDelta {
   enemies: number;
   animals: number;
   deaths: number;
+  bossKills: number;
+  bossDamage: number;
 }
 
 export interface LoadedPlayer {
@@ -52,20 +54,23 @@ const LOAD_SQL = `
 // Lifetime dust earned is what the xp column holds (docs/GAME_PLAN.md section 1.5).
 const FLUSH_SQL = `
   WITH delta AS (
-    SELECT * FROM unnest($1::uuid[], $2::int[], $3::bigint[], $4::int[], $5::int[], $6::int[])
-      AS d(user_id, slot, dust, enemies, animals, deaths)
+    SELECT * FROM unnest($1::uuid[], $2::int[], $3::bigint[], $4::int[], $5::int[], $6::int[], $7::int[], $8::bigint[])
+      AS d(user_id, slot, dust, enemies, animals, deaths, boss_kills, boss_damage)
   ), saves AS (
     UPDATE character_saves c
     SET binary_dust = c.binary_dust + delta.dust, xp = c.xp + delta.dust, updated_at = NOW()
     FROM delta WHERE c.user_id = delta.user_id AND c.slot = delta.slot AND delta.dust <> 0
   ), account AS (
-    SELECT user_id, SUM(enemies)::int AS enemies, SUM(animals)::int AS animals, SUM(deaths)::int AS deaths
+    SELECT user_id, SUM(enemies)::int AS enemies, SUM(animals)::int AS animals, SUM(deaths)::int AS deaths,
+           SUM(boss_kills)::int AS boss_kills, SUM(boss_damage)::bigint AS boss_damage
     FROM delta GROUP BY user_id
   )
   UPDATE player_stats s
   SET enemies_killed = s.enemies_killed + account.enemies,
       animals_hunted = s.animals_hunted + account.animals,
-      deaths = s.deaths + account.deaths
+      deaths = s.deaths + account.deaths,
+      boss_kills = s.boss_kills + account.boss_kills,
+      boss_damage = s.boss_damage + account.boss_damage
   FROM account WHERE s.user_id = account.user_id`;
 
 // The insert and the reward are one statement, so a chest can't pay out twice or get lost halfway.
@@ -148,13 +153,15 @@ export class ProgressStore {
     const key = `${userId}:${slot}`;
     let entry = this.pending.get(key);
     if (!entry) {
-      entry = { userId, slot, delta: { dust: 0, enemies: 0, animals: 0, deaths: 0 } };
+      entry = { userId, slot, delta: { dust: 0, enemies: 0, animals: 0, deaths: 0, bossKills: 0, bossDamage: 0 } };
       this.pending.set(key, entry);
     }
     entry.delta.dust += delta.dust ?? 0;
     entry.delta.enemies += delta.enemies ?? 0;
     entry.delta.animals += delta.animals ?? 0;
     entry.delta.deaths += delta.deaths ?? 0;
+    entry.delta.bossKills += delta.bossKills ?? 0;
+    entry.delta.bossDamage += delta.bossDamage ?? 0;
   }
 
   /** Earned but not saved yet, because the last write failed. Added to what the database says on login. */
@@ -164,12 +171,14 @@ export class ProgressStore {
 
   /** Kills and deaths belong to the account, so they count from every save still waiting to be written. */
   unsavedAccount(userId: string): ProgressDelta {
-    const total: ProgressDelta = { dust: 0, enemies: 0, animals: 0, deaths: 0 };
+    const total: ProgressDelta = { dust: 0, enemies: 0, animals: 0, deaths: 0, bossKills: 0, bossDamage: 0 };
     for (const entry of this.pending.values()) {
       if (entry.userId !== userId) continue;
       total.enemies += entry.delta.enemies;
       total.animals += entry.delta.animals;
       total.deaths += entry.delta.deaths;
+      total.bossKills += entry.delta.bossKills;
+      total.bossDamage += entry.delta.bossDamage;
     }
     return total;
   }
@@ -191,6 +200,8 @@ export class ProgressStore {
       batch.map((entry) => entry.delta.enemies),
       batch.map((entry) => entry.delta.animals),
       batch.map((entry) => entry.delta.deaths),
+      batch.map((entry) => entry.delta.bossKills),
+      batch.map((entry) => entry.delta.bossDamage),
     ]).then(
       () => undefined,
       (err: unknown) => {

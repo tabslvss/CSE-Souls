@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent 
 import { api, ApiError, type AvatarOptions, type AvatarResult } from '../api';
 import { sound } from '../sound';
 import { Icon } from './Icon';
+import { useInputDevice } from './InputGlyph';
+import { isPadDevice } from '../game/inputDevice';
+import { PadHints, type PadHint } from '../ui/PadHints';
+import { padFocus } from '../ui/padNav';
+import '../styles/site-pad.css';
 
 type Tab = 'emblems' | 'generated' | 'github' | 'upload';
 
@@ -15,6 +20,15 @@ const TABS: Array<{ id: Tab; label: string }> = [
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/gif'];
 const GENERATED_COUNT = 12;
+
+const BASE_HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'confirm', label: 'Use' },
+  { button: 'tabs', label: 'Source' },
+  { button: 'back', label: 'Close' },
+];
+
+const GENERATED_HINTS: PadHint[] = [...BASE_HINTS.slice(0, 2), { button: 'x', label: 'Shuffle' }, ...BASE_HINTS.slice(2)];
 
 /** Random seeds, so nothing about the player is sent to the avatar service. */
 function randomSeeds(): string[] {
@@ -39,15 +53,38 @@ export function AvatarPicker({
   const [githubLogin, setGithubLogin] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pad = useInputDevice() !== 'keyboard';
+  const body = useRef<HTMLDivElement>(null);
+  /** The tile last pressed, to give the controller its highlight back if that fails. */
+  const pressed = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     dialog.current?.showModal();
     api.avatarOptions().then(setOptions, (err: Error) => setError(err.message));
   }, []);
 
+  // The browser focuses the close button on opening. With a controller, the first picture is a
+  // better start, once the pictures have loaded.
+  useEffect(() => {
+    if (!options || !isPadDevice()) return;
+    const active = document.activeElement;
+    if (active && body.current?.contains(active)) return;
+    const first = body.current?.querySelector<HTMLElement>('.picker__tile');
+    if (first) padFocus(first);
+  }, [options]);
+
+  // Pictures are disabled while one is being applied, which drops the highlight. Put it back.
+  useEffect(() => {
+    if (busy || !isPadDevice()) return;
+    const target = pressed.current;
+    const active = document.activeElement;
+    if (target?.isConnected && (!active || active === document.body || active === dialog.current)) padFocus(target);
+  }, [busy]);
+
   const style = useMemo(() => options?.styles.find((item) => item.id === styleId), [options, styleId]);
 
   const apply = async (work: () => Promise<AvatarResult>) => {
+    pressed.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setBusy(true);
     setError(null);
     try {
@@ -82,10 +119,10 @@ export function AvatarPicker({
   };
 
   return (
-    <dialog ref={dialog} className="picker" onClose={onClose} aria-labelledby="picker-title">
+    <dialog ref={dialog} className="picker" onClose={onClose} aria-labelledby="picker-title" data-pad-scope="picker">
       <header className="picker__header">
         <h2 id="picker-title">Choose your profile picture</h2>
-        <button type="button" className="picker__close" onClick={onClose} aria-label="Close">
+        <button type="button" className="picker__close" onClick={onClose} aria-label="Close" data-pad-back>
           &times;
         </button>
       </header>
@@ -98,6 +135,7 @@ export function AvatarPicker({
             role="tab"
             aria-selected={tab === item.id}
             className="tabs__tab"
+            data-pad-tab
             onClick={() => {
               setTab(item.id);
               setError(null);
@@ -110,7 +148,7 @@ export function AvatarPicker({
 
       {error && <p className="form__error" role="alert">{error}</p>}
 
-      <div className="picker__body" aria-busy={busy}>
+      <div className="picker__body" aria-busy={busy} ref={body} data-pad-default>
         {tab === 'emblems' && (
           <ul className="picker__grid">
             {options?.emblems.map((emblem) => (
@@ -143,7 +181,19 @@ export function AvatarPicker({
                   {item.label}
                 </button>
               ))}
-              <button type="button" className="chip chip--action" onClick={() => setSeeds(randomSeeds())}>
+              <button type="button" className="chip chip--action" data-pad-x
+                onClick={() => {
+                  // New pictures replace the old ones. If one of them had the highlight, it moves to the first.
+                  const onTile = document.activeElement?.matches('.picker__tile') ?? false;
+                  setSeeds(randomSeeds());
+                  if (onTile) {
+                    requestAnimationFrame(() => {
+                      const first = body.current?.querySelector<HTMLElement>('.picker__tile');
+                      if (first) padFocus(first);
+                    });
+                  }
+                }}
+              >
                 Shuffle
               </button>
             </div>
@@ -169,6 +219,7 @@ export function AvatarPicker({
 
         {tab === 'github' && (
           <form className="form" onSubmit={onGitHubSubmit}>
+            {pad && <p className="pad-tip">Typing a GitHub username needs a keyboard.</p>}
             <div className="field">
               <label htmlFor="github-login">GitHub username</label>
               <input
@@ -190,6 +241,7 @@ export function AvatarPicker({
 
         {tab === 'upload' && (
           <div className="picker__upload">
+            {pad && <p className="pad-tip">Choosing a file from your computer needs a mouse or keyboard.</p>}
             <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/gif" hidden onChange={onFileChosen} />
             <button type="button" className="btn btn--primary" disabled={busy} onClick={() => fileInput.current?.click()}>
               {busy ? 'Uploading…' : 'Choose an Image'}
@@ -198,6 +250,8 @@ export function AvatarPicker({
           </div>
         )}
       </div>
+      {/* Inline, because the open picker sits above the site's own hint bar. */}
+      <PadHints placement="inline" hints={tab === 'generated' ? GENERATED_HINTS : BASE_HINTS} />
     </dialog>
   );
 }

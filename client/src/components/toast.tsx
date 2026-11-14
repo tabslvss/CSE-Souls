@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import type { Achievement } from '../api';
 import { sound } from '../sound';
 import { AchievementGlyph } from './AchievementGlyph';
+// The controller look for the site's pages. Toasts load with every site page, so this does too.
+import '../styles/site-pad.css';
 
 type Listener = (achievement: Achievement) => void;
 const listeners = new Set<Listener>();

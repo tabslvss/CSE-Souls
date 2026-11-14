@@ -4,10 +4,21 @@
  * buttons) and nothing here reads damage, targets or positions from them. It knows nothing about
  * sockets or the database, which come in through WorldHooks.
  */
-import { isStatKey, MAX_STAT, type StatKey } from '../../../shared/classes.js';
+import {
+  BOSS_BAR_RANGE,
+  BOSS_MOVES,
+  BossMove,
+  CRITICAL_DAMAGE_MULTIPLIER,
+  inCritWindow,
+  packStance,
+  packStunLeft,
+  type BossMoveId,
+} from '../../../shared/boss.js';
+import { CLASSES, isStatKey, MAX_STAT, type StatKey } from '../../../shared/classes.js';
 import { collide, segmentBlocked } from '../../../shared/collision.js';
 import {
   attackDamage,
+  CRITICAL_SECONDS,
   inMeleeArc,
   staggerPower,
   RESPAWN_SECONDS,
@@ -21,6 +32,7 @@ import {
   steerToward,
   type WeaponStats,
 } from '../../../shared/combat.js';
+import { isHostile } from '../../../shared/creatures.js';
 import {
   findGrace,
   GRACE_DISCOVER_RADIUS,
@@ -48,6 +60,7 @@ import {
 import {
   attackHitThisStep,
   createState,
+  criticalImpactThisStep,
   deriveStats,
   isInvulnerable,
   MAX_POTIONS,
@@ -91,6 +104,10 @@ const DISCOVER_CHECK_TICKS = 6;
 const DANGER_CHECK_TICKS = 15;
 const FIRST_BLOOD_KILLS = 1;
 const BEAST_HUNTER_KILLS = 10;
+/** A boss fight is long, so anyone who hit it in the last minute shares the loot. */
+const BOSS_LOOT_WINDOW_SECONDS = 60;
+/** Given for helping kill the Great Bull. The row is in migrations/004_bull_boss.sql. */
+export const BOSS_ACHIEVEMENT = 'bull_slayer';
 
 /** SimInput plus the one button that isn't part of movement prediction. */
 export interface ServerInput extends SimInput {
@@ -211,6 +228,8 @@ export interface WorldPlayer extends CreatureTarget {
   achievements: Set<string>;
   selfChanged: boolean;
   eventsSeen: number;
+  /** The boss this player's critical is on, while state.criticalTime runs. Only the server sets it. */
+  critTarget: Creature | null;
 }
 
 /** How the world reaches everything outside it. */
@@ -218,7 +237,10 @@ export interface WorldHooks {
   /** Sends to this player only. */
   send(player: WorldPlayer, message: ServerMessage): void;
   /** Adds to saved totals. Doesn't wait. */
-  credit(player: WorldPlayer, delta: { dust?: number; enemies?: number; animals?: number; deaths?: number }): void;
+  credit(
+    player: WorldPlayer,
+    delta: { dust?: number; enemies?: number; animals?: number; deaths?: number; bossKills?: number; bossDamage?: number },
+  ): void;
   /** Resolves true if this account hadn't opened it before. */
   openChest(player: WorldPlayer, chest: MapChest): Promise<boolean>;
   /** Resolves true if the achievement is new. */
@@ -303,6 +325,17 @@ interface Meteor {
   styleIndex: number;
 }
 
+/** A boss fireball. Only ever hurts players, so it's kept apart from players' shots, which only hurt creatures. */
+interface BossShot {
+  id: number;
+  boss: Creature;
+  x: number;
+  z: number;
+  dirX: number;
+  dirZ: number;
+  remaining: number;
+}
+
 interface QueuedEvent {
   text: string;
   x: number;
@@ -323,6 +356,7 @@ export class World {
   readonly field: CreatureField;
   readonly projectiles: Projectile[] = [];
   readonly meteors: Meteor[] = [];
+  readonly bossShots: BossShot[] = [];
   time = 0;
   tickNumber = 0;
 
@@ -338,16 +372,29 @@ export class World {
   private scratchDistance = new Map<Creature, number>();
   private nearCreatures: Creature[] = [];
   private nearDistances: number[] = [];
+  /** The boss health bar for this round of snapshots, or '' when there's none to show. */
+  private bossBar = '';
+  private bossBarX = 0;
+  private bossBarZ = 0;
 
   constructor(
     private hooks: WorldHooks,
     private config: WorldConfig = MAP,
   ) {
     this.random = config.random ?? Math.random;
-    this.field = new CreatureField(config.camps, config.graces, {
-      players: this.players,
-      bite: (creature, target) => this.bite(creature, target as WorldPlayer),
-    });
+    this.field = new CreatureField(
+      config.camps,
+      config.graces,
+      {
+        players: this.players,
+        bite: (creature, target) => this.bite(creature, target as WorldPlayer),
+        bossHurt: (boss, target, move, damage, fromX, fromZ) =>
+          this.hurt(boss, target as WorldPlayer, damage, fromX, fromZ, move),
+        bossFireball: (boss, x, z, yaw) => this.launchBossShot(boss, x, z, yaw),
+        emit: (event, x, z, about) => this.emit(event, x, z, about),
+      },
+      this.random,
+    );
   }
 
   addPlayer(setup: PlayerSetup): WorldPlayer {
@@ -393,6 +440,7 @@ export class World {
       eventsSeen: this.eventCount,
       gone: false,
       attackers: 0,
+      critTarget: null,
     };
     this.players.push(player);
     return player;
@@ -420,6 +468,7 @@ export class World {
       if (this.tickNumber % DANGER_CHECK_TICKS === 0) this.checkRestDanger(player);
     }
     this.moveProjectiles();
+    this.moveBossShots();
     this.landMeteors();
     this.field.step(this.tickNumber);
     for (const player of this.players) {
@@ -464,19 +513,35 @@ export class World {
   }
 
   private isBusy({ state }: WorldPlayer): boolean {
-    return state.dodgeTime > 0 || state.attackTime > 0 || state.staggerTime > 0 || state.drinkTime > 0 || state.jumpTime > 0;
+    return (
+      state.dodgeTime > 0 ||
+      state.attackTime > 0 ||
+      state.staggerTime > 0 ||
+      state.drinkTime > 0 ||
+      state.jumpTime > 0 ||
+      state.criticalTime > 0
+    );
   }
 
   /** One step of the shared movement rules, firing the attack at the exact step it reaches its hit moment. */
   private stepOnce(player: WorldPlayer, input: ServerInput): void {
     const { state, derived } = player;
+    // Attacking a stunned boss from its window becomes a critical in place of a swing.
+    if (input.attack) this.tryStartCritical(player);
     const attackBefore = state.attackTime;
     const potionsBefore = state.potions;
+    const criticalBefore = state.criticalTime;
+    // stepPlayer ignores input during a critical and applies its travel when it ends.
     stepPlayer(state, input, derived);
     if (state.potions < potionsBefore) {
       this.emit({ k: 'drink', v: player.id }, state.x, state.z, player.id);
     }
     if (attackHitThisStep(attackBefore, state.attackTime, derived) && state.deadTime <= 0) this.fireAttack(player);
+    if (criticalBefore > 0) {
+      if (criticalImpactThisStep(criticalBefore, state.criticalTime)) this.landCritical(player);
+      if (state.criticalTime <= 0) player.critTarget = null;
+      return;
+    }
     // A chest in reach comes first, so that resting nearby can't get in the way of opening it.
     if (input.interact && state.deadTime <= 0 && !this.tryOpenChest(player)) this.tryRest(player);
   }
@@ -530,30 +595,38 @@ export class World {
     state.knockX = 0;
     state.knockZ = 0;
     state.moving = 0;
+    state.criticalTime = 0;
+    player.critTarget = null;
     this.hooks.credit(player, { deaths: 1 });
     this.emit({ k: 'death', v: player.id }, state.x, state.z, player.id);
   }
 
   /** A creature's strike connected, if the player isn't dead or in the safe frames of a dodge. */
   private bite(creature: Creature, player: WorldPlayer): void {
+    this.hurt(creature, player, creature.kind.damage, creature.x, creature.z, -1);
+  }
+
+  /**
+   * Every creature's blow lands here, bites and boss moves alike, so stagger, knockback, death and events
+   * follow one set of rules. move is a BossMove id, or -1 for a bite. True if it landed.
+   */
+  private hurt(creature: Creature, player: WorldPlayer, damage: number, fromX: number, fromZ: number, move: BossMoveId | -1): boolean {
     const { state, derived } = player;
-    if (state.deadTime > 0 || isInvulnerable(state, derived)) return;
-    const damage = creature.kind.damage;
+    if (state.deadTime > 0 || isInvulnerable(state, derived)) return false;
     // A blow always stands you up. The menu closes with it, on the player's own screen.
     if (state.resting > 0) this.interruptRest(player);
     state.health = Math.max(0, state.health - damage);
-    this.emit(
-      { k: 'bite', c: creature.id, v: player.id, x: round2(state.x), z: round2(state.z), dmg: damage },
-      state.x,
-      state.z,
-      player.id,
-    );
+    const event: GameEvent =
+      move < 0
+        ? { k: 'bite', c: creature.id, v: player.id, x: round2(state.x), z: round2(state.z), dmg: damage }
+        : { k: 'bossDmg', c: creature.id, m: move, v: player.id, dmg: damage };
+    this.emit(event, state.x, state.z, player.id);
     if (state.health <= 0) {
       this.kill(player);
-      return;
+      return true;
     }
-    const dx = state.x - creature.x;
-    const dz = state.z - creature.z;
+    const dx = state.x - fromX;
+    const dz = state.z - fromZ;
     const distance = Math.sqrt(dx * dx + dz * dz);
     state.knockX = distance > 0 ? dx / distance : Math.sin(creature.yaw);
     state.knockZ = distance > 0 ? dz / distance : Math.cos(creature.yaw);
@@ -561,6 +634,77 @@ export class World {
     // Being knocked off balance interrupts a swing or a roll already under way.
     state.attackTime = 0;
     state.dodgeTime = 0;
+    return true;
+  }
+
+  /* Criticals. The boss's stun and who claimed it live in CreatureField; the player side lives here. */
+
+  /**
+   * Starts a critical if this player may: alive, free to act, and inside a stunned boss's window with a clear
+   * line to it that nobody else has claimed. Everything is checked from the server's own state.
+   */
+  private tryStartCritical(player: WorldPlayer): boolean {
+    const { state } = player;
+    if (player.gone || state.deadTime > 0 || state.criticalTime > 0 || state.resting > 0) return false;
+    if (state.attackTime > 0 || state.dodgeTime > 0 || state.staggerTime > 0) return false;
+    for (const boss of this.field.bosses) {
+      if (!this.field.canBeCritted(boss)) continue;
+      if (!inCritWindow(boss.x, boss.z, boss.yaw, state.x, state.z)) continue;
+      if (segmentBlocked(state.x, state.z, boss.x, boss.z)) continue;
+      // Costs no stamina or magic, and cancels whatever was left of a drink.
+      state.criticalTime = CRITICAL_SECONDS;
+      if (boss.x !== state.x || boss.z !== state.z) state.yaw = Math.atan2(boss.x - state.x, boss.z - state.z);
+      state.attackTime = 0;
+      state.dodgeTime = 0;
+      state.drinkTime = 0;
+      state.staggerTime = 0;
+      state.knockX = 0;
+      state.knockZ = 0;
+      state.moving = 0;
+      player.critTarget = boss;
+      this.field.claimCritical(boss, player);
+      const cls = CLASSES.findIndex((item) => item.id === player.info.classId);
+      this.emit(
+        {
+          k: 'crit',
+          by: player.id,
+          c: boss.id,
+          x: round2(state.x),
+          z: round2(state.z),
+          yaw: round2(state.yaw),
+          w: player.info.appearance.variant,
+          cls: Math.max(0, cls),
+        },
+        state.x,
+        state.z,
+        player.id,
+      );
+      return true;
+    }
+    return false;
+  }
+
+  /** The critical's one blow: big, past stance and poise, and it counts for loot like any other hit. */
+  private landCritical(player: WorldPlayer): void {
+    const boss = player.critTarget;
+    if (!boss || !boss.alive || !this.field.isCritBy(boss, player)) return;
+    this.field.markCritLanded(boss);
+    const damage = player.damage * CRITICAL_DAMAGE_MULTIPLIER;
+    const healthBefore = boss.health;
+    boss.health = Math.max(0, boss.health - damage);
+    boss.hitters.set(player, this.time);
+    this.hooks.credit(player, { bossDamage: Math.round(healthBefore - boss.health) });
+    const killed = boss.health <= 0;
+    this.emit(
+      { k: 'critHit', by: player.id, c: boss.id, x: round2(boss.x), z: round2(boss.z), dmg: damage, kill: killed ? 1 : 0 },
+      boss.x,
+      boss.z,
+      player.id,
+    );
+    if (killed) {
+      this.field.onDeath(boss);
+      this.reward(boss);
+    }
   }
 
   /* Attacks. */
@@ -928,7 +1072,7 @@ export class World {
   }
 
   /** Puts the projectile at the last open spot before the wall, so its splash stays on this side. */
-  private stopAtWall(shot: Projectile, reach: number): void {
+  private stopAtWall(shot: { x: number; z: number; dirX: number; dirZ: number }, reach: number): void {
     const stepSize = 0.25;
     let walked = 0;
     while (walked + stepSize < reach) {
@@ -987,16 +1131,92 @@ export class World {
     );
   }
 
+  private launchBossShot(boss: Creature, x: number, z: number, yaw: number): void {
+    const { speed, range, radius } = BOSS_MOVES.fireballs;
+    // The same id counter as players' shots, so the browser never mixes two up.
+    const id = this.nextProjectileId++;
+    this.bossShots.push({ id, boss, x, z, dirX: Math.sin(yaw), dirZ: Math.cos(yaw), remaining: range });
+    this.emit(
+      { k: 'bossShot', id, c: boss.id, x: round2(x), z: round2(z), yaw: round2(yaw), speed, range, r: radius },
+      x,
+      z,
+      0,
+    );
+  }
+
+  private moveBossShots(): void {
+    for (let index = this.bossShots.length - 1; index >= 0; index -= 1) {
+      if (this.moveBossShot(this.bossShots[index])) {
+        this.bossShots[index] = this.bossShots[this.bossShots.length - 1];
+        this.bossShots.pop();
+      }
+    }
+  }
+
+  /** One tick of a boss fireball. It burns the first player it touches; a roll's safe frames let it pass. */
+  private moveBossShot(shot: BossShot): boolean {
+    const { speed, radius, damage } = BOSS_MOVES.fireballs;
+    const travel = Math.min(speed * TICK_DT, shot.remaining);
+    const limit = radius + PLAYER_RADIUS;
+    let reach = travel;
+    let struck: WorldPlayer | null = null;
+    for (const player of this.players) {
+      const { state } = player;
+      if (state.deadTime > 0 || isInvulnerable(state, player.derived)) continue;
+      const toX = state.x - shot.x;
+      const toZ = state.z - shot.z;
+      const along = Math.max(0, Math.min(travel, toX * shot.dirX + toZ * shot.dirZ));
+      const offX = toX - shot.dirX * along;
+      const offZ = toZ - shot.dirZ * along;
+      if (offX * offX + offZ * offZ > limit * limit || along > reach) continue;
+      struck = player;
+      reach = along;
+    }
+    const endX = shot.x + shot.dirX * reach;
+    const endZ = shot.z + shot.dirZ * reach;
+    if (segmentBlocked(shot.x, shot.z, endX, endZ)) {
+      this.stopAtWall(shot, reach);
+      this.emit({ k: 'bossShotEnd', id: shot.id, x: round2(shot.x), z: round2(shot.z), hit: 0, v: 0 }, shot.x, shot.z, 0);
+      return true;
+    }
+    shot.x = endX;
+    shot.z = endZ;
+    shot.remaining -= reach;
+    if (struck) {
+      this.emit(
+        { k: 'bossShotEnd', id: shot.id, x: round2(shot.x), z: round2(shot.z), hit: 1, v: struck.id },
+        shot.x,
+        shot.z,
+        struck.id,
+      );
+      // Knocked along the way it was flying.
+      this.hurt(shot.boss, struck, damage, shot.x - shot.dirX, shot.z - shot.dirZ, BossMove.Fireballs);
+      return true;
+    }
+    if (shot.remaining <= 1e-6) {
+      this.emit({ k: 'bossShotEnd', id: shot.id, x: round2(shot.x), z: round2(shot.z), hit: 0, v: 0 }, shot.x, shot.z, 0);
+      return true;
+    }
+    return false;
+  }
+
   private hitCreature(creature: Creature, attacker: WorldPlayer, damage: number, power: number, styleIndex: number): void {
     const { kind } = creature;
+    const healthBefore = creature.health;
     creature.health = Math.max(0, creature.health - damage);
     creature.hitters.set(attacker, this.time);
+    // For the boss damage leaderboard. Only what it really lost counts, not overkill.
+    if (creature.boss) this.hooks.credit(attacker, { bossDamage: Math.round(healthBefore - creature.health) });
+
+    // A boss's stance fills from the same power. Breaking it, or already being down, takes the place of a stagger.
+    const stunned = creature.boss?.stunned ?? false;
+    const stanceBroke = creature.health > 0 && this.field.addStance(creature, power);
 
     if (this.time - creature.lastPoiseHit > POISE_RESET_SECONDS) creature.poise = 0;
     creature.lastPoiseHit = this.time;
     creature.poise += power;
-    const poiseBroke = creature.health > 0 && creature.poise >= kind.poise;
-    if (poiseBroke) creature.poise = 0;
+    const poiseBroke = !stunned && !stanceBroke && creature.health > 0 && creature.poise >= kind.poise;
+    if (poiseBroke || stanceBroke) creature.poise = 0;
 
     const killed = creature.health <= 0;
     this.emit(
@@ -1018,6 +1238,8 @@ export class World {
     if (killed) {
       this.field.onDeath(creature);
       this.reward(creature);
+    } else if (stanceBroke) {
+      this.field.breakStance(creature);
     } else {
       this.field.onHit(creature, attacker, poiseBroke);
     }
@@ -1026,11 +1248,13 @@ export class World {
   /** Loot is personal: everyone who helped recently gets a full roll of their own. */
   private reward(creature: Creature): void {
     const { kind } = creature;
+    const isBoss = creature.boss !== null;
+    const window = isBoss ? BOSS_LOOT_WINDOW_SECONDS : LOOT_WINDOW_SECONDS;
     for (const [target, hitAt] of creature.hitters) {
       const player = target as WorldPlayer;
-      if (player.gone || this.time - hitAt > LOOT_WINDOW_SECONDS) continue;
-      // Wolves and bulls count as enemies, the rest as animals. The leaderboard adds the two together.
-      const isEnemy = kind.behavior === 'hunter';
+      if (player.gone || this.time - hitAt > window) continue;
+      // Wolves, bulls and bosses count as enemies, the rest as animals. The leaderboard adds the two together.
+      const isEnemy = isHostile(kind);
       if (isEnemy) player.enemies += 1;
       else player.animals += 1;
       let dust = 0;
@@ -1044,10 +1268,16 @@ export class World {
           player.id,
         );
       }
-      this.hooks.credit(player, { dust, enemies: isEnemy ? 1 : 0, animals: isEnemy ? 0 : 1 });
+      this.hooks.credit(
+        player,
+        isBoss
+          ? { dust, enemies: 1, animals: 0, bossKills: 1 }
+          : { dust, enemies: isEnemy ? 1 : 0, animals: isEnemy ? 0 : 1 },
+      );
       player.selfChanged = true;
       if (player.enemies >= FIRST_BLOOD_KILLS) this.grant(player, 'first_blood');
       if (player.animals >= BEAST_HUNTER_KILLS) this.grant(player, 'beast_hunter');
+      if (isBoss) this.grant(player, BOSS_ACHIEVEMENT);
     }
     creature.hitters.clear();
   }
@@ -1316,6 +1546,17 @@ export class World {
     this.snapshotStamp += 1;
     const list = this.players.map((player) => packSnapshot(player.id, player.state));
     this.snapshotList = JSON.stringify(list);
+    this.bossBar = '';
+    for (const boss of this.field.bosses) {
+      if (!boss.alive || !boss.boss?.engaged) continue;
+      const { stance, stunned } = boss.boss;
+      const stunLeft = packStunLeft(stunned ? boss.timer : 0);
+      this.bossBar = `,"b":[${boss.id},${boss.kindIndex},${Math.ceil(boss.health)},${boss.kind.health},${packStance(stance)},${stunLeft}]`;
+      // Measured from its arena's centre, where it lives, so the bar doesn't flicker as it moves.
+      this.bossBarX = boss.camp.x;
+      this.bossBarZ = boss.camp.z;
+      break;
+    }
   }
 
   /**
@@ -1336,6 +1577,11 @@ export class World {
     let text = `{"t":"s","a":${player.lastSeq},"p":${this.snapshotList},"c":[${this.nearbyCreatures(state)}]`;
     const events = this.eventsFor(player);
     if (events.length > 0) text += `,"e":[${events.join(',')}]`;
+    if (this.bossBar !== '') {
+      const dx = state.x - this.bossBarX;
+      const dz = state.z - this.bossBarZ;
+      if (dx * dx + dz * dz <= BOSS_BAR_RANGE * BOSS_BAR_RANGE) text += this.bossBar;
+    }
     return `${text}}`;
   }
 

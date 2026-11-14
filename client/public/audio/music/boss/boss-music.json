@@ -1,0 +1,65 @@
+{
+  "bpm": 112,
+  "beatSeconds": 0.5357142857142857,
+  "barSeconds": 2.142857142857143,
+  "loopBars": 24,
+  "decoderOffsetSeconds": 0.0,
+  "loopStart": 0.5,
+  "loopEnd": 51.928571,
+  "firstBeatAfterLoopStart": 0.004399,
+  "introHitAt": 4.290113,
+  "stingerHitAt": 0.62,
+  "chords": [
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Dm",
+    "Bb",
+    "Dm",
+    "Fm",
+    "Fm",
+    "Bbm",
+    "C#",
+    "Fm",
+    "Fm",
+    "Bbm",
+    "Dm",
+    "Gm"
+  ],
+  "source": {
+    "title": "Final Battle of the Dark Wizards",
+    "author": "Kevin MacLeod (incompetech.com)",
+    "license": "CC BY 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "sectionSeconds": [
+      131.139,
+      182.5676
+    ]
+  },
+  "seam": {
+    "boss-low": {
+      "jump": 0.00154,
+      "p50": 0.00125,
+      "p99": 0.00382
+    },
+    "boss-main": {
+      "jump": 0.02464,
+      "p50": 0.01536,
+      "p99": 0.12889
+    },
+    "boss-high": {
+      "jump": 0.03315,
+      "p50": 0.0177,
+      "p99": 0.16379
+    }
+  }
+}

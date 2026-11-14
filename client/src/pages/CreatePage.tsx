@@ -18,6 +18,11 @@ import { appearanceOptions, classDefaults, CLASS_PICTURE_ICON, type AppearanceOp
 import { Icon } from '../components/Icon';
 import { useSession } from '../session';
 import { sound } from '../sound';
+import { PadGlyph, useInputDevice } from '../components/InputGlyph';
+import { isPadDevice } from '../game/inputDevice';
+import { PadHints, type PadHint } from '../ui/PadHints';
+import { padFocus, type PadNavDetail } from '../ui/padNav';
+import '../styles/site-pad.css';
 
 const MAX_STAT = 20;
 
@@ -44,16 +49,52 @@ function OptionRow({
   option,
   value,
   onChange,
+  isDefault,
 }: {
   option: AppearanceOption;
   value: number;
   onChange: (value: number) => void;
+  isDefault: boolean;
 }) {
   const count = Math.min(APPEARANCE_LIMITS[option.key], option.choices.length);
+  const row = useRef<HTMLFieldSetElement>(null);
+  const pad = useInputDevice() !== 'keyboard';
+  // The latest value and setter, for the listener added once below.
+  const latest = useRef({ value, onChange, count });
+  latest.current = { value, onChange, count };
+
+  // With a controller the whole row is one item: left and right step through its choices.
+  useEffect(() => {
+    const element = row.current;
+    if (!element) return;
+    const onAdjust = (event: Event) => {
+      const { step } = (event as CustomEvent<{ step: -1 | 1 }>).detail;
+      const { value: current, onChange: change, count: total } = latest.current;
+      if (total < 2) return;
+      event.preventDefault();
+      change((current + step + total) % total);
+      sound.play('hover');
+    };
+    element.addEventListener('padadjust', onAdjust);
+    return () => element.removeEventListener('padadjust', onAdjust);
+  }, []);
+
   return (
-    <fieldset className="option">
-      <legend>{option.label}</legend>
-      <div className="option__choices">
+    <fieldset
+      ref={row}
+      className="option"
+      data-pad-item
+      data-pad-adjust
+      data-pad-noscale
+      data-pad-default={isDefault || undefined}
+      aria-label={pad ? `${option.label}, choice ${value + 1} of ${count}` : undefined}
+    >
+      <legend>
+        {option.label}
+        {pad && <span className="option__count">{value + 1} / {count}</span>}
+      </legend>
+      {/* The buttons stay for the mouse and keyboard; the controller uses the row instead. */}
+      <div className="option__choices" data-pad-skip>
         {Array.from({ length: count }, (_, index) => {
           const choice = option.choices[index];
           const swatch = option.isColor ? choice : null;
@@ -76,6 +117,21 @@ function OptionRow({
   );
 }
 
+const CLASS_HINTS: PadHint[] = [
+  { button: 'dpadUpDown', label: 'Choose class' },
+  { button: 'confirm', label: 'Continue' },
+  { button: 'tabs', label: 'Step' },
+  { button: 'back', label: 'Back' },
+];
+
+const CUSTOMIZE_HINTS: PadHint[] = [
+  { button: 'dpadUpDown', label: 'Move' },
+  { button: 'adjust', label: 'Change' },
+  { button: 'y', label: 'Save and Play' },
+  { button: 'tabs', label: 'Step' },
+  { button: 'back', label: 'Class' },
+];
+
 export default function CreatePage() {
   const navigate = useNavigate();
   const [search] = useSearchParams();
@@ -83,6 +139,9 @@ export default function CreatePage() {
   const slot = parseSlot(Number(search.get('slot'))) ?? undefined;
   const { user, refresh } = useSession();
   const stage = useRef<StageHandle>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const primary = useRef<HTMLButtonElement>(null);
+  const pad = useInputDevice() !== 'keyboard';
   const [step, setStep] = useState<Step>('class');
   const [classId, setClassId] = useState<ClassId>('duelist');
   const [appearance, setAppearance] = useState<Appearance>(DEFAULT_APPEARANCE);
@@ -124,11 +183,58 @@ export default function CreatePage() {
       setError(err instanceof Error ? err.message : "Your character couldn't be saved.");
       sound.play('error');
       setSaving(false);
+      // The button was disabled while saving, which drops the controller's highlight.
+      if (isPadDevice()) requestAnimationFrame(() => primary.current && padFocus(primary.current));
     }
   };
 
+  // With a controller, changing step puts the highlight on the first thing of the new step.
+  const firstStep = useRef(true);
+  useEffect(() => {
+    if (firstStep.current) {
+      firstStep.current = false;
+      return;
+    }
+    if (!isPadDevice() || !root.current) return;
+    const target = root.current.querySelector<HTMLElement>(
+      step === 'class' ? '.class-card[aria-checked="true"]' : '.option[data-pad-item]',
+    );
+    if (target) padFocus(target);
+  }, [step]);
+
+  // Controller extras: the shoulder buttons switch step, and A on a class picks it and moves on.
+  const latest = useRef({ step, chooseClass });
+  latest.current = { step, chooseClass };
+  useEffect(() => {
+    const onPad = (event: Event) => {
+      const { action, scope } = (event as CustomEvent<PadNavDetail>).detail;
+      if (!root.current || scope !== root.current) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (action === 'tabPrev' || action === 'tabNext') {
+        event.preventDefault();
+        const next: Step = action === 'tabNext' ? 'customize' : 'class';
+        if (next !== latest.current.step) {
+          sound.play('page');
+          setStep(next);
+        }
+      } else if (action === 'confirm' && active?.matches('.class-card')) {
+        event.preventDefault();
+        const id = active.dataset.classId as ClassId;
+        if (id) latest.current.chooseClass(id);
+        sound.play('confirm');
+        setStep('customize');
+      } else if (action === 'confirm' && active?.matches('.option[data-pad-item]')) {
+        // A on a row of choices steps to the next one, the same as right.
+        event.preventDefault();
+        active.dispatchEvent(new CustomEvent('padadjust', { detail: { step: 1 }, bubbles: true, cancelable: true }));
+      }
+    };
+    window.addEventListener('padnav', onPad);
+    return () => window.removeEventListener('padnav', onPad);
+  }, []);
+
   return (
-    <div className="create">
+    <div className="create" ref={root} data-pad-scope="create">
       <CharacterStage ref={stage} classId={classId} appearance={appearance} className="create__stage" />
 
       <header className="create__top">
@@ -137,8 +243,10 @@ export default function CreatePage() {
           <span className="brand__word">CSE Souls</span>
         </Link>
         <ol className="create__steps">
+          {pad && <li className="create__step-glyph" aria-hidden="true"><PadGlyph button="lb" /></li>}
           <li data-active={step === 'class'}>1. Class</li>
           <li data-active={step === 'customize'}>2. Appearance</li>
+          {pad && <li className="create__step-glyph" aria-hidden="true"><PadGlyph button="rb" /></li>}
         </ol>
         <p className="create__player">{user?.username}</p>
       </header>
@@ -159,7 +267,13 @@ export default function CreatePage() {
                   role="radio"
                   aria-checked={item.id === classId}
                   className="class-card"
+                  data-class-id={item.id}
+                  data-pad-default={item.id === classId || undefined}
                   onClick={() => chooseClass(item.id)}
+                  // With a controller, moving over a class shows it, like arrow keys in a radio group.
+                  onFocus={() => {
+                    if (isPadDevice() && item.id !== classId) chooseClass(item.id);
+                  }}
                 >
                   <span className="class-card__icon"><Icon name={CLASS_PICTURE_ICON[item.id]} /></span>
                   <span>
@@ -175,12 +289,13 @@ export default function CreatePage() {
             <h1>Customize your {definition.name}</h1>
             <Divider />
             <div className="options">
-              {appearanceOptions(classId, appearance).map((option) => (
+              {appearanceOptions(classId, appearance).map((option, index) => (
                 <OptionRow
                   key={option.key}
                   option={option}
                   value={appearance[option.key]}
-                  onChange={(value) => setAppearance({ ...appearance, [option.key]: value })}
+                  isDefault={index === 0}
+                  onChange={(value) => setAppearance((current) => ({ ...current, [option.key]: value }))}
                 />
               ))}
             </div>
@@ -199,28 +314,44 @@ export default function CreatePage() {
       </aside>
 
       <footer className="create__actions">
-        <p className="create__drag">Drag to turn your character</p>
+        {!pad && <p className="create__drag">Drag to turn your character</p>}
         {error && <p className="form__error" role="alert">{error}</p>}
         <div className="create__buttons">
           {step === 'class' ? (
             <>
-              <Link className="btn btn--ghost btn--large" to="/">Back</Link>
-              <button type="button" className="btn btn--primary btn--large" onClick={() => setStep('customize')}>
+              <Link key="leave" className="btn btn--ghost btn--large" to="/" data-pad-back>Back</Link>
+              <button
+                key="next"
+                ref={primary}
+                type="button"
+                className="btn btn--primary btn--large"
+                data-pad-y
+                onClick={() => setStep('customize')}
+              >
                 Next: Appearance
               </button>
             </>
           ) : (
             <>
-              <button type="button" className="btn btn--ghost btn--large" onClick={() => setStep('class')}>
+              <button key="back" type="button" className="btn btn--ghost btn--large" data-pad-back onClick={() => setStep('class')}>
                 Back
               </button>
-              <button type="button" className="btn btn--primary btn--large" disabled={saving} onClick={save}>
+              <button
+                key="save"
+                ref={primary}
+                type="button"
+                className="btn btn--primary btn--large"
+                data-pad-y
+                disabled={saving}
+                onClick={save}
+              >
                 {saving ? 'Saving…' : 'Save and Play'}
               </button>
             </>
           )}
         </div>
       </footer>
+      <PadHints hints={step === 'class' ? CLASS_HINTS : CUSTOMIZE_HINTS} />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 /** Numbers for animals and other creatures. The server runs them; the browser only draws them. */
 
-export type CreatureBehavior = 'hunter' | 'prey';
+/** 'boss' hunts like a hunter but picks from the moves in shared/boss.ts instead of biting. */
+export type CreatureBehavior = 'hunter' | 'prey' | 'boss';
 
 export interface CreatureKind {
   id: string;
@@ -26,6 +27,10 @@ export interface CreatureKind {
   dustMin: number;
   dustMax: number;
   respawnSeconds: number;
+  /** How much bigger the browser draws it than its model. 1 if left out. */
+  scale?: number;
+  /** Which kind's model the browser draws, when it differs from id. */
+  model?: string;
 }
 
 /** The position in this list is what goes in a snapshot, so only ever add to the end. */
@@ -35,7 +40,14 @@ export const CREATURES: readonly CreatureKind[] = [
   { id: 'stag', name: 'Stag', behavior: 'prey', health: 90, damage: 0, windup: 0, recovery: 0, walkSpeed: 1.3, runSpeed: 7, aggro: 10, leash: 60, biteRange: 0, radius: 0.8, poise: 20, dustChance: 1, dustMin: 6, dustMax: 9, respawnSeconds: 60 },
   { id: 'fox', name: 'Fox', behavior: 'prey', health: 20, damage: 0, windup: 0, recovery: 0, walkSpeed: 1.1, runSpeed: 7, aggro: 7, leash: 50, biteRange: 0, radius: 0.4, poise: 1, dustChance: 0.7, dustMin: 1, dustMax: 2, respawnSeconds: 30 },
   { id: 'bull', name: 'Black Aurochs', behavior: 'hunter', health: 320, damage: 30, windup: 0.8, recovery: 1.2, walkSpeed: 1.5, runSpeed: 6, aggro: 9, leash: 30, biteRange: 2.4, radius: 1.2, poise: 90, dustChance: 1, dustMin: 20, dustMax: 30, respawnSeconds: 90 },
+  // A first, easy boss. damage, windup, recovery and biteRange are fallbacks: its real moves are in shared/boss.ts.
+  { id: 'bull_boss', name: 'Cinderhorn, the Great Bull', behavior: 'boss', health: 900, damage: 22, windup: 0.9, recovery: 1.4, walkSpeed: 1.6, runSpeed: 5, aggro: 26, leash: 30, biteRange: 6, radius: 3.2, poise: 150, dustChance: 1, dustMin: 120, dustMax: 160, respawnSeconds: 240, scale: 4, model: 'bull' },
 ];
+
+/** True for creatures that fight players: hunters and bosses. Use this rather than comparing with 'hunter'. */
+export function isHostile(kind: CreatureKind): boolean {
+  return kind.behavior === 'hunter' || kind.behavior === 'boss';
+}
 
 export const CREATURE_BY_ID = new Map(CREATURES.map((kind, index) => [kind.id, { kind, index }]));
 

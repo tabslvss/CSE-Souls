@@ -7,8 +7,12 @@ import { MAP } from './mapData.js';
 import type { MapCollider } from './mapTypes.js';
 
 const CELL = 8;
-/** The biggest circle ever passed to collide(), so that the grid always finds what it could touch. */
-const LARGEST_RADIUS = 1;
+/**
+ * The biggest circle ever passed to collide(), so that the grid always finds what it could touch. 4 covers the
+ * boss (radius 3.2). Each collider is registered in every cell within its reach plus this, so a bigger value
+ * only puts a few more colliders in each cell. Callers must not pass a bigger radius.
+ */
+export const LARGEST_RADIUS = 4;
 const { bounds } = MAP;
 const columns = Math.ceil((bounds.maxX - bounds.minX) / CELL) + 1;
 const rows = Math.ceil((bounds.maxZ - bounds.minZ) / CELL) + 1;

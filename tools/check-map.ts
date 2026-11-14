@@ -79,6 +79,13 @@ const spots: Spot[] = [
   ),
   ...MAP.camps.map((camp, index) => ({ name: `camp ${index} ${camp.kind}`, x: camp.x, z: camp.z })),
 ];
+// The great bull's ring: its middle, and the way in on its east side.
+const boss = MAP.camps.find((camp) => camp.kind === 'bull_boss');
+if (!boss) {
+  console.log('NO BULL BOSS CAMP');
+} else {
+  spots.push({ name: 'arena center', x: boss.x, z: boss.z }, { name: 'arena entrance', x: boss.x + 27, z: boss.z });
+}
 // Spawn points scatter across this circle, so the whole of it must be open.
 for (let i = 0; i < 16; i += 1) {
   const angle = (i / 16) * Math.PI * 2;
@@ -110,6 +117,27 @@ for (const camp of MAP.camps) {
     console.log(`CAMP TOO TIGHT: ${camp.kind} at ${camp.x}, ${camp.z}`);
     failures += 1;
   }
+}
+
+// The boss fights across the whole ring, so nothing solid may stand inside it.
+if (boss) {
+  const blocked = MAP.colliders.filter((collider) => {
+    const dx = boss.x - collider.x;
+    const dz = boss.z - collider.z;
+    if (collider.t === 'c') return Math.hypot(dx, dz) - collider.r < 24;
+    const outX = Math.max(0, Math.abs(dx * collider.cos - dz * collider.sin) - collider.hw);
+    const outZ = Math.max(0, Math.abs(dx * collider.sin + dz * collider.cos) - collider.hd);
+    return Math.hypot(outX, outZ) < 24;
+  });
+  for (const collider of blocked) console.log(`SOLID INSIDE THE ARENA at ${collider.x}, ${collider.z}`);
+  failures += blocked.length;
+} else {
+  failures += 1;
+}
+const hills = MAP.hills ?? [];
+if (hills.length % 6 !== 0) {
+  console.log('HILLS ARE NOT PACKED IN SIXES');
+  failures += 1;
 }
 
 // Walks through the main gate along the road in small steps, the way the game moves a player.

@@ -5,6 +5,7 @@ import type { Appearance, ClassId, Stats } from '../../../shared/classes';
 import { weaponFor } from '../../../shared/combat';
 import { DODGE_SECONDS, DRINK_SECONDS, JUMP_SECONDS, STAGGER_SECONDS, deriveStats, type AnimationId } from '../../../shared/sim';
 import { ARMORY } from './armory';
+import { CRITICAL_SECONDS } from './attacks/types';
 import { applyVertexSnap, makeTextureCrunchy } from './psxRenderer';
 import { createWeaponRig } from './weaponRig';
 
@@ -14,6 +15,12 @@ import { createWeaponRig } from './weaponRig';
  * which parts to show. The animation files use that same skeleton.
  */
 
+/** A foot this far above its resting height has left the ground. */
+const FOOT_LIFTED_METERS = 0.045;
+/** Moving down less than this in a frame counts as having landed. */
+const FOOT_STILL_METERS = 0.0015;
+/** Faster than any real stride, so a heel bouncing in a clip isn't heard as a second step. */
+const MIN_FOOTFALL_SECONDS = 0.2;
 const FADE_SECONDS = 0.16;
 const ATLAS_SIZE = 256;
 const WEAPON_GLOW = 0.45;
@@ -216,6 +223,8 @@ export interface CharacterModel {
   /** Crossfades to an animation. restart replays a one-shot, like a second swing. */
   play: (animation: AnimationId, restart?: boolean) => void;
   update: (seconds: number) => void;
+  /** How many feet came down since the last call, read from the animation itself. */
+  takeFootfalls: () => number;
   /** During a drink only: whether the legs walk or stand. */
   setDrinkWalking: (walking: boolean) => void;
   /** Above 1 means a hand can't reach where the weapon wants it. Used to check new poses. */
@@ -234,6 +243,28 @@ export interface CharacterModel {
   setNextAttack: (index: number) => void;
   /** Seconds for the whole attack, after the character's Speed. */
   attackSeconds: number;
+  /**
+   * Starts the weapon's critical on a stunned boss. Until it ends, or cancelCritical is called, play() is
+   * ignored. It blends in from whatever was playing, and hands back to idle by itself at the end.
+   */
+  playCritical: (seconds?: number) => void;
+  /** Stops a critical part way, for a death or a disconnect, and goes back to idle. */
+  cancelCritical: () => void;
+  /** From 0 to 1 in real time during a critical, and -1 otherwise. attackPhase is -1 during one. */
+  criticalPhase: () => number;
+  /** Where the critical's keys are, from 0 to 1: the same as criticalPhase unless it has a time warp. -1 outside one. */
+  criticalKeyPhase: () => number;
+  /** The weapon's named moments in the critical, in real time from 0 to 1, to compare with criticalPhase. */
+  criticalMarks: () => Readonly<Record<string, number>>;
+  /**
+   * Writes the world offset to add to root.position this frame, for dashes and leaps: forward along
+   * root.rotation.y, and up. Zero outside a critical. Once it ends, move the player by criticalTravel.
+   */
+  criticalRootOffset: (target: THREE.Vector3) => THREE.Vector3;
+  /** How fast the body moves through the critical against real time, below 1 in slow motion. 1 otherwise. */
+  criticalTimeScale: () => number;
+  /** Meters along the facing that the critical ends up moved: the player's position should move this far by its end. */
+  criticalTravel: number;
   dispose: () => void;
 }
 
@@ -383,6 +414,8 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
     jump: 'Jump_Start',
     // Only the head and a little sway come from this: the rig places the body and limbs on the ground.
     rest: NEUTRAL_CLIP,
+    // playCritical() drives the real critical; this only covers a 'critical' id reaching play() first.
+    critical: NEUTRAL_BODY,
   };
   const oneShotSeconds: Partial<Record<AnimationId, number>> = {
     attack: attackSeconds,
@@ -421,6 +454,17 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
   let drinkWalking = false;
   let jumpClock = 0;
   let jumpStage = 0;
+  // The real pose decides when a step lands, so sound stays on the foot at any clip speed.
+  model.updateWorldMatrix(true, true);
+  const planted = (['foot_l', 'foot_r'] as const).flatMap((name) => {
+    const bone = model.getObjectByName(name);
+    if (!bone) return [];
+    const restY = model.worldToLocal(bone.getWorldPosition(new THREE.Vector3())).y;
+    return [{ bone, restY, lastY: restY, armed: false }];
+  });
+  const footAt = new THREE.Vector3();
+  let footfalls = 0;
+  let sinceFootfall = 0;
 
   const crossTo = (name: string, seconds?: number, fade = FADE_SECONDS, rate?: number): boolean => {
     const pair = actionsFor(name, name === NEUTRAL_BODY ? undefined : seconds);
@@ -434,7 +478,11 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
     return true;
   };
 
+  let inCritical = false;
+  const rootShift = { forward: 0, up: 0 };
+
   const play = (id: AnimationId, restart = false) => {
+    if (inCritical) return;
     if (id === currentId && !restart) return;
     let name: string;
     if (id === 'attack') {
@@ -460,9 +508,42 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
   };
   play('idle');
 
+  const playCritical = (seconds = CRITICAL_SECONDS) => {
+    inCritical = false;
+    rig.startCritical(seconds);
+    const name = rig.criticalClip ?? NEUTRAL_BODY;
+    const clip = rig.criticalClip ? clips.get(rig.criticalClip) : undefined;
+    // A clip under a critical plays over its whole length, at whatever speed the attack's copy was made for.
+    if (!crossTo(name, seconds, 0.2, clip ? clip.duration / seconds : undefined)) crossTo(NEUTRAL_BODY, undefined, 0.2);
+    currentId = 'attack';
+    drinkWalking = false;
+    jumpClock = 0;
+    jumpStage = 0;
+    inCritical = true;
+  };
+
+  const endCritical = () => {
+    if (!inCritical) return;
+    inCritical = false;
+    rig.cancelCritical();
+    play('idle', true);
+  };
+
   return {
     root,
     play,
+    playCritical,
+    cancelCritical: endCritical,
+    criticalPhase: rig.criticalPhase,
+    criticalMarks: rig.criticalMarks,
+    criticalKeyPhase: rig.criticalKeyPhase,
+    criticalRootOffset: (target) => {
+      rig.criticalRoot(rootShift);
+      const yaw = root.rotation.y;
+      return target.set(Math.sin(yaw) * rootShift.forward, rootShift.up, Math.cos(yaw) * rootShift.forward);
+    },
+    criticalTimeScale: rig.criticalTimeScale,
+    criticalTravel: rig.criticalTravel,
     update: (seconds) => {
       if (currentId !== 'attack') sinceAttack += seconds;
       if (currentId === 'jump') {
@@ -478,6 +559,30 @@ export async function createCharacter(classId: ClassId, appearance: Appearance, 
       mixer.update(seconds);
       rig.afterClips();
       rig.apply(seconds, currentId ?? 'idle');
+      // Played through: the last frame is already heading for the stance, so idle takes over without a pop.
+      if (inCritical && rig.criticalPhase() < 0) endCritical();
+      if (seconds <= 0) return;
+      sinceFootfall += seconds;
+      const grounded = currentId === 'walk' || currentId === 'run' || currentId === 'attack' || currentId === 'drink';
+      for (const foot of planted) {
+        const y = model.worldToLocal(foot.bone.getWorldPosition(footAt)).y;
+        const lifted = y - foot.restY;
+        if (lifted > FOOT_LIFTED_METERS) foot.armed = true;
+        else if (foot.armed && y >= foot.lastY - FOOT_STILL_METERS) {
+          // It had left the ground, and has now stopped coming down.
+          foot.armed = false;
+          if (grounded && sinceFootfall >= MIN_FOOTFALL_SECONDS) {
+            footfalls += 1;
+            sinceFootfall = 0;
+          }
+        }
+        foot.lastY = y;
+      }
+    },
+    takeFootfalls: () => {
+      const count = footfalls;
+      footfalls = 0;
+      return count;
     },
     setDrinkWalking: (walking) => {
       if (currentId !== 'drink' || walking === drinkWalking) return;

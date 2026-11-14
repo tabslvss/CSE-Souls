@@ -1,0 +1,185 @@
+/*
+ * The in-game screens on a controller: the pause card, the grace and map overlays, and the prompts.
+ * Everything here applies only while a controller is in use (html.pad-active, set by ui/padNav.ts),
+ * so the mouse and keyboard look stays as it was. The glow, scale and gliding corners come from pad.css.
+ */
+
+/* ---------- Room for the hint bar ---------- */
+
+html.pad-active .game__menu {
+  padding-bottom: 60px;
+}
+
+html.pad-active .game__menu-card {
+  width: min(94vw, 640px);
+  max-height: calc(94vh - 60px);
+  gap: 16px;
+}
+
+/* While a menu's hint bar is up, the health bars and Binary Dust rise above it instead of hiding behind it. */
+.game__hud {
+  transition: bottom 0.2s ease;
+}
+
+html.pad-active:not(.pad-game) body:has(> .pad-hints-bar) .game__hud {
+  bottom: 52px;
+}
+
+html.pad-active .grace-screen {
+  padding-bottom: 54px;
+}
+
+html.pad-active .map-screen {
+  padding-bottom: 52px;
+}
+
+html.pad-active .map-screen__card {
+  height: calc(97vh - 52px);
+}
+
+/* pages.css draws an outline for keyboard focus; on a controller the gold glow does that job. */
+html.pad-active :is(.game__menu-card, .grace-screen, .map-screen) :is(button, a, input, label, [data-pad-item]):focus {
+  outline: none;
+}
+
+/* ---------- Pause card ---------- */
+
+html.pad-active .game__play {
+  min-width: min(100%, 300px);
+  gap: 10px;
+}
+
+html.pad-active .game__play .input-glyph {
+  width: 28px;
+  height: 28px;
+}
+
+/* Two columns of controls keep the whole card on screen, so the highlight never has to scroll it. */
+html.pad-active .game__keys {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px;
+  row-gap: 6px;
+}
+
+html.pad-active .game__keys > div {
+  justify-content: flex-start;
+  min-height: 30px;
+}
+
+html.pad-active .game__keys dt {
+  flex: none;
+  justify-content: center;
+  min-width: 34px;
+}
+
+@media (max-width: 560px) {
+  html.pad-active .game__keys {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Each setting is a full-width row, so it is an easy target and the highlight frames its words too. */
+html.pad-active .game__settings {
+  gap: 6px;
+}
+
+html.pad-active .game__settings label {
+  min-height: 44px;
+  padding: 8px 14px;
+  gap: 12px;
+  background: rgba(201, 164, 92, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(201, 164, 92, 0.18);
+  color: var(--text-2);
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+html.pad-active .game__settings input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  flex: none;
+}
+
+html.pad-active .game__settings label:focus {
+  background: rgba(201, 164, 92, 0.16);
+  color: var(--gold-pale);
+}
+
+/* The rows are not links or buttons, so pad.css's scale-up would nudge the words. They glow instead. */
+html.pad-active .game__settings label:focus {
+  scale: 1;
+  animation: none;
+}
+
+/* The two links read as buttons on a controller, with room for the highlight. */
+html.pad-active .game__menu-links {
+  gap: 12px;
+}
+
+html.pad-active .game__menu-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+  box-shadow: inset 0 0 0 1px rgba(201, 164, 92, 0.22);
+  text-decoration: none;
+}
+
+html.pad-active .game__menu-links a:focus {
+  background: rgba(201, 164, 92, 0.16);
+  color: var(--gold-pale);
+}
+
+/* ---------- Prompts ---------- */
+
+/* Controller pictures are wider than key caps, so they get a touch more room in the prompts. */
+html.pad-active :is(.game__prompt, .boss-hud__crit) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+html.pad-active .game__prompt {
+  white-space: nowrap;
+}
+
+html.pad-active :is(.game__prompt, .boss-hud__crit--ready) .input-glyph {
+  width: 30px;
+  height: 30px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+}
+
+
+/* The setting's state in words, at the end of its row. Only on a controller, where the row is the target. */
+.game__setting-state {
+  display: none;
+}
+
+html.pad-active .game__setting-state {
+  display: inline;
+  margin-left: auto;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3, #8b8170);
+}
+
+html.pad-active .game__settings label.is-on .game__setting-state {
+  color: var(--gold-bright);
+}
+
+/* The stopped-game message carries a way back to the site. */
+.game__message--stuck {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.game__message--stuck p {
+  margin: 0;
+}

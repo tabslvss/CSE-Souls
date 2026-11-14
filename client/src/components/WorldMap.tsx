@@ -1,6 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MAP } from '../../../shared/mapData';
 import type { MapView } from '../game/GameClient';
+import { getInputDevice } from '../game/inputDevice';
+import { padFocus, showPadNote, type PadNavDetail, type PadStickDetail } from '../ui/padNav';
+import { PadHints, type PadHint } from '../ui/PadHints';
+import { PadGlyph, useInputDevice } from './InputGlyph';
+import '../styles/map-pad.css';
 
 const PAINTING_URL = '/map/world.webp';
 const SURROUND_URL = '/map/surround.webp';
@@ -20,6 +25,22 @@ const MOST_ZOOM = 6;
 const WHEEL_SPEED = 0.0016;
 /** Grace names come in from this close, in CSS pixels per meter. */
 const NAMES_FROM = 3.9;
+
+/* The controller cursor. Distances are in CSS pixels on screen. */
+/** How fast the cursor crosses the screen at full stick. */
+const CURSOR_SPEED = 520;
+/** Near a grace the cursor slows, so that it is easy to stop on one. */
+const CURSOR_MAGNET = 30;
+/** Let go of the stick this close to a grace and the cursor settles onto it. */
+const CURSOR_SNAP = 26;
+/** The cursor is on a grace when it is this close to it. */
+const CURSOR_ON = 10;
+/** The camera follows once the cursor is this share of the view from an edge. */
+const CURSOR_EDGE = 0.22;
+/** A right stick push past this steps to the next grace that way. */
+const FLICK = 0.55;
+/** A stick input older than this, in milliseconds, has stopped. */
+const STICK_STALE = 150;
 
 /** Colors that match the site's gold style. A canvas can't read them from the stylesheet cheaply every frame. */
 const GOLD = '#c9a45c';
@@ -548,14 +569,26 @@ export function WorldMap({
   onPick?: (grace: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const plaqueRef = useRef<HTMLDivElement>(null);
   // Read inside the drawing loop, so that the loop doesn't restart whenever one of these changes.
   const latest = useRef({ view, lit, here, onPick });
   latest.current = { view, lit, here, onPick };
+  const device = useInputDevice();
+  /** The grace under the controller cursor, for its name plate. */
+  const [padTarget, setPadTarget] = useState<number | null>(null);
+  /** True while the map itself holds the controller's highlight. */
+  const [padFocused, setPadFocused] = useState(false);
+  /** True when the screen around the map has tabs for the shoulder buttons. */
+  const [padTabs, setPadTabs] = useState(false);
+  /** False when the screen around the map has its own use for Square/X. */
+  const [padFindMe, setPadFindMe] = useState(true);
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    const root = rootRef.current;
     const context = canvas?.getContext('2d', { alpha: false });
-    if (!canvas || !context) return;
+    if (!canvas || !root || !context) return;
 
     let frame = 0;
     let unmounted = false;
@@ -591,6 +624,32 @@ export function WorldMap({
     let hover: number | null = null;
     let cursor = '';
     let lastTime = performance.now();
+
+    /**
+     * The controller's cursor, a world point. The left stick moves it, and the camera follows when it
+     * nears an edge. goal is where it is gliding to, after a step to a grace or a recentre.
+     */
+    const pad = {
+      x: (minX + maxX) / 2,
+      z: (minZ + maxZ) / 2,
+      placed: false,
+      goal: null as { x: number; z: number } | null,
+      /** True while the camera should keep the cursor in view. Dragging with the mouse clears it. */
+      follow: false,
+      pushing: false,
+      flickHeld: false,
+      flickWait: 0,
+      /** 0 to 1, how far the reticle has closed onto a grace. */
+      lock: 0,
+      target: null as number | null,
+      focused: false,
+    };
+    let stick: PadStickDetail | null = null;
+    let stickAt = 0;
+    /** The controller scope this map sits in, which hands it the sticks. */
+    let scope: HTMLElement | null = null;
+    let addedCustom = false;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
     const keepOnMap = () => {
       const scale = fit * camera.zoom;
@@ -656,22 +715,189 @@ export function WorldMap({
       camera.goal = clamp(1, most, camera.goal * factor);
     };
 
-    const stepCamera = (seconds: number) => {
-      const pad = readController();
-      if (pad) {
-        // The left stick moves through the menu's buttons, so the map gets the right one, and the triggers zoom.
-        const stickX = pad.axes[2] ?? 0;
-        const stickY = pad.axes[3] ?? 0;
-        const push = Math.hypot(stickX, stickY);
-        if (push > 0.18) {
-          const speed = ((push - 0.18) / 0.82 / push) * 520 * ratio * seconds / (fit * camera.zoom);
-          camera.x += stickX * speed;
-          camera.z += stickY * speed;
-          anchor = null;
-            }
-        const zoomPush = (pad.buttons[7]?.value ?? 0) - (pad.buttons[6]?.value ?? 0);
-        if (Math.abs(zoomPush) > 0.08) zoomAt(Math.exp(zoomPush * seconds * 1.8), width / 2, height / 2);
+    /* ---------- The controller cursor ---------- */
+
+    const litGraces = () => MAP.graces.filter((grace) => latest.current.lit.includes(grace.id));
+
+    /** The found grace nearest the world point, if it is within this many CSS pixels on screen. */
+    const graceNear = (x: number, z: number, pixels: number) => {
+      const scale = fit * camera.zoom;
+      let best = pixels * ratio;
+      let found: (typeof MAP.graces)[number] | null = null;
+      for (const grace of litGraces()) {
+        const distance = Math.hypot(grace.x - x, grace.z - z) * scale;
+        if (distance <= best) {
+          best = distance;
+          found = grace;
+        }
       }
+      return found;
+    };
+
+    const clampCursor = () => {
+      pad.x = clamp(minX, maxX, pad.x);
+      pad.z = clamp(minZ, maxZ, pad.z);
+    };
+
+    /** The cursor starts on you, or on the grace you rest at, as a console map does. */
+    const placeCursor = (force: boolean, me: MapView['me'] = latest.current.view().me) => {
+      if (pad.placed && !force) return;
+      const rest = MAP.graces.find((grace) => grace.id === latest.current.here);
+      const spot = me ? { x: me.x, z: me.z } : rest ? { x: rest.x, z: rest.z } : null;
+      if (!spot && !force) return;
+      pad.placed = true;
+      pad.x = spot?.x ?? (minX + maxX) / 2;
+      pad.z = spot?.z ?? (minZ + maxZ) / 2;
+      pad.goal = null;
+      clampCursor();
+    };
+
+    /** Brings a cursor that the mouse left off screen back to the middle of the view. */
+    const cursorIntoView = () => {
+      const sx = screenX(pad.x);
+      const sy = screenY(pad.z);
+      if (sx >= 0 && sy >= 0 && sx <= width && sy <= height) return;
+      pad.x = camera.x;
+      pad.z = camera.z;
+      pad.goal = null;
+    };
+
+    /** Steps to the nearest found grace that lies roughly that way on screen. */
+    const stepToGrace = (dx: number, dy: number): boolean => {
+      const from = pad.goal ?? pad;
+      const fromX = screenX(from.x);
+      const fromY = screenY(from.z);
+      let best: (typeof MAP.graces)[number] | null = null;
+      // Within 60 degrees of the push first, the more in line the better, and failing that within 80.
+      for (const cone of [0.5, 0.17]) {
+        let bestScore = Infinity;
+        for (const grace of litGraces()) {
+          const vx = screenX(grace.x) - fromX;
+          const vy = screenY(grace.z) - fromY;
+          const distance = Math.hypot(vx, vy);
+          if (distance < 4 * ratio) continue;
+          const along = (vx * dx + vy * dy) / distance;
+          if (along < cone) continue;
+          const score = distance * (1 + (1 - along) * 3);
+          if (score < bestScore) {
+            bestScore = score;
+            best = grace;
+          }
+        }
+        if (best) break;
+      }
+      if (!best) return false;
+      pad.goal = { x: best.x, z: best.z };
+      pad.follow = true;
+      anchor = null;
+      return true;
+    };
+
+    const focusMap = () => {
+      if (document.activeElement !== root) padFocus(root);
+    };
+
+    /** Without a controller scope around the map, it reads the right stick and triggers itself, as it always did. */
+    const fallbackStick = (): PadStickDetail | null => {
+      const controller = readController();
+      if (!controller) return null;
+      const shape = (x: number, y: number) => {
+        const size = Math.hypot(x, y);
+        if (size <= 0.18) return { x: 0, y: 0 };
+        const amount = Math.min(1, (size - 0.18) / 0.82) ** 1.6;
+        return { x: (x / size) * amount, y: (y / size) * amount };
+      };
+      const right = shape(controller.axes[2] ?? 0, controller.axes[3] ?? 0);
+      return { lx: right.x, ly: right.y, rx: 0, ry: 0, lt: controller.buttons[6]?.value ?? 0, rt: controller.buttons[7]?.value ?? 0, seconds: 0 };
+    };
+
+    const stepCursor = (seconds: number, time: number) => {
+      const input = scope ? (stick && time - stickAt < STICK_STALE ? stick : null) : fallbackStick();
+      const scale = fit * camera.zoom;
+      let touched = false;
+      if (input) {
+        const push = Math.hypot(input.lx, input.ly);
+        if (push > 0) {
+          if (!pad.placed) placeCursor(true);
+          if (!pad.pushing) cursorIntoView();
+          const slow = graceNear(pad.x, pad.z, CURSOR_MAGNET) ? 0.5 : 1;
+          const step = (CURSOR_SPEED * ratio * slow * seconds) / scale;
+          pad.x += input.lx * step;
+          pad.z += input.ly * step;
+          pad.goal = null;
+          pad.follow = true;
+          anchor = null;
+          touched = true;
+        } else if (pad.pushing) {
+          // Let go near a grace and the cursor settles onto it.
+          const near = graceNear(pad.x, pad.z, CURSOR_SNAP);
+          if (near) pad.goal = { x: near.x, z: near.z };
+        }
+        pad.pushing = push > 0;
+
+        const flick = Math.hypot(input.rx, input.ry);
+        pad.flickWait -= seconds;
+        if (flick > FLICK) {
+          if (!pad.flickHeld || pad.flickWait <= 0) {
+            if (!pad.placed) placeCursor(true);
+            else cursorIntoView();
+            stepToGrace(input.rx / flick, input.ry / flick);
+            pad.flickWait = pad.flickHeld ? 0.24 : 0.42;
+          }
+          pad.flickHeld = true;
+          touched = true;
+        } else {
+          pad.flickHeld = false;
+        }
+
+        const zoomPush = input.rt - input.lt;
+        if (Math.abs(zoomPush) > 0.05) {
+          if (!pad.placed) placeCursor(true);
+          cursorIntoView();
+          // Zooms about the cursor, so that what it points at stays put.
+          zoomAt(Math.exp(zoomPush * seconds * 2), screenX(pad.x), screenY(pad.z));
+          touched = true;
+        }
+      } else {
+        pad.pushing = false;
+        pad.flickHeld = false;
+      }
+      if (touched && scope) focusMap();
+
+      if (pad.goal) {
+        const follow = reduceMotion.matches ? 1 : 1 - Math.exp(-seconds * 16);
+        pad.x += (pad.goal.x - pad.x) * follow;
+        pad.z += (pad.goal.z - pad.z) * follow;
+        if (Math.hypot(pad.goal.x - pad.x, pad.goal.z - pad.z) * scale < 0.5) {
+          pad.x = pad.goal.x;
+          pad.z = pad.goal.z;
+          pad.goal = null;
+        }
+      }
+      clampCursor();
+    };
+
+    /** Moves the camera so that the cursor stays clear of the view's edges. */
+    const followCursor = (seconds: number) => {
+      if (!pad.follow || anchor) return;
+      const scale = fit * camera.zoom;
+      const sx = screenX(pad.x);
+      const sy = screenY(pad.z);
+      const edgeX = width * CURSOR_EDGE;
+      const edgeY = height * CURSOR_EDGE;
+      const dx = sx < edgeX ? sx - edgeX : sx > width - edgeX ? sx - (width - edgeX) : 0;
+      const dy = sy < edgeY ? sy - edgeY : sy > height - edgeY ? sy - (height - edgeY) : 0;
+      if (dx === 0 && dy === 0) {
+        if (!pad.goal && !pad.pushing) pad.follow = false;
+        return;
+      }
+      const share = reduceMotion.matches ? 1 : 1 - Math.exp(-seconds * 10);
+      camera.x += (dx / scale) * share;
+      camera.z += (dy / scale) * share;
+    };
+
+    const stepCamera = (seconds: number, time: number) => {
+      stepCursor(seconds, time);
 
       if (camera.zoom !== camera.goal) {
         const step = 1 - Math.exp(-seconds * 12);
@@ -684,6 +910,7 @@ export function WorldMap({
         }
         if (camera.zoom === camera.goal) anchor = null;
       }
+      followCursor(seconds);
       keepOnMap();
     };
 
@@ -735,6 +962,198 @@ export function WorldMap({
       context.stroke();
       context.fillStyle = '#ffffff';
       context.fill();
+    };
+
+    /**
+     * The controller's reticle: a thin gold ring with four ticks, in the ink of the compass. Over a grace
+     * the ring tightens, turns a quarter and its ticks close in as brackets around the star.
+     */
+    const drawReticle = (x: number, y: number, lock: number, time: number, dim: boolean) => {
+      const still = reduceMotion.matches;
+      const breathe = still ? 0 : Math.sin(time / 380) * 0.06;
+      const radius = (17 - 2.5 * lock) * ratio * (1 + breathe * (1 - lock));
+      const turn = (lock * Math.PI) / 4 + (still ? 0 : (1 - lock) * (time / 9000));
+      context.save();
+      context.globalAlpha = dim ? 0.55 : 1;
+      context.translate(x, y);
+      context.lineCap = 'round';
+
+      if (lock > 0.01) {
+        context.globalCompositeOperation = 'screen';
+        context.globalAlpha = (dim ? 0.3 : 0.55) * lock;
+        const glow = context.createRadialGradient(0, 0, 0, 0, 0, radius * 2.2);
+        glow.addColorStop(0, 'rgba(255, 214, 130, 0.65)');
+        glow.addColorStop(1, 'rgba(255, 190, 90, 0)');
+        context.fillStyle = glow;
+        context.fillRect(-radius * 2.2, -radius * 2.2, radius * 4.4, radius * 4.4);
+        context.globalCompositeOperation = 'source-over';
+        context.globalAlpha = dim ? 0.55 : 1;
+      }
+
+      // The ring, dark under gold so it reads over bright land and dark forest alike.
+      const ring = () => {
+        context.beginPath();
+        context.arc(0, 0, radius, 0, Math.PI * 2);
+      };
+      ring();
+      context.strokeStyle = HALO;
+      context.lineWidth = 4 * ratio;
+      context.stroke();
+      ring();
+      context.strokeStyle = lock > 0.5 ? GOLD_BRIGHT : GOLD;
+      context.lineWidth = 1.4 * ratio;
+      context.stroke();
+
+      context.rotate(turn);
+      for (let i = 0; i < 4; i += 1) {
+        context.save();
+        context.rotate((i * Math.PI) / 2);
+        // Ticks pointing in, which open into corner brackets as the cursor settles on a grace.
+        const out = radius + (7 - 2 * lock) * ratio;
+        const inner = radius + 2 * ratio;
+        const arm = 5 * ratio * lock;
+        context.beginPath();
+        context.moveTo(-arm, -out + arm * 0.2);
+        context.lineTo(0, -inner);
+        context.lineTo(arm, -out + arm * 0.2);
+        if (lock < 0.05) {
+          context.moveTo(0, -out);
+          context.lineTo(0, -inner);
+        }
+        context.strokeStyle = HALO;
+        context.lineWidth = 4 * ratio;
+        context.stroke();
+        context.strokeStyle = GOLD_BRIGHT;
+        context.lineWidth = 1.6 * ratio;
+        context.stroke();
+        context.restore();
+      }
+      context.rotate(-turn);
+
+      // A small diamond at the very point, gone once a grace's own star sits there.
+      if (lock < 0.95) {
+        const size = 3 * ratio * (1 - lock);
+        context.beginPath();
+        context.moveTo(0, -size);
+        context.lineTo(size, 0);
+        context.lineTo(0, size);
+        context.lineTo(-size, 0);
+        context.closePath();
+        context.fillStyle = GOLD_PALE;
+        context.strokeStyle = HALO;
+        context.lineWidth = 1.6 * ratio;
+        context.stroke();
+        context.fill();
+      }
+      context.restore();
+    };
+
+    /** Places the HTML name plate beside the reticle, and on its left near the right edge. */
+    const placePlaque = (x: number, y: number) => {
+      const plaque = plaqueRef.current;
+      if (!plaque) return;
+      const offset = canvas.offsetLeft;
+      const top = canvas.offsetTop;
+      const cssX = x / ratio;
+      const cssY = y / ratio;
+      const leftSide = cssX > canvas.clientWidth - 260;
+      plaque.classList.toggle('world-map__plaque--left', leftSide);
+      plaque.style.transform = `translate(${Math.round(offset + cssX + (leftSide ? -26 : 26))}px, ${Math.round(top + cssY)}px)`;
+      plaque.classList.add('world-map__plaque--placed');
+    };
+
+    /** Finds the controller scope around the map and asks it for the sticks. Checked every frame, as screens add it late. */
+    const bindScope = () => {
+      const next = root.parentElement?.closest<HTMLElement>('[data-pad-scope]') ?? null;
+      if (next === scope) return;
+      unbindScope();
+      scope = next;
+      if (!scope) return;
+      if (!scope.hasAttribute('data-pad-custom')) {
+        scope.setAttribute('data-pad-custom', '');
+        addedCustom = true;
+      }
+      scope.addEventListener('padstick', onStick);
+      setPadTabs(!!scope.querySelector('[data-pad-tab]'));
+      setPadFindMe(!scope.querySelector('[data-pad-x]'));
+    };
+
+    const unbindScope = () => {
+      if (!scope) return;
+      scope.removeEventListener('padstick', onStick);
+      if (addedCustom) scope.removeAttribute('data-pad-custom');
+      addedCustom = false;
+      scope = null;
+    };
+
+    const onStick = (event: Event) => {
+      stick = (event as CustomEvent<PadStickDetail>).detail;
+      stickAt = performance.now();
+    };
+
+    /** A press, before the controller layer handles it. Only taken while the map holds the highlight. */
+    const onPadNav = (event: Event) => {
+      const { action, scope: current } = (event as CustomEvent<PadNavDetail>).detail;
+      if (current !== scope) return;
+      // Square/X finds you, unless the screen around the map has its own use for that button.
+      if (action === 'x') {
+        if (scope?.querySelector('[data-pad-x]')) return;
+        event.preventDefault();
+        placeCursor(true);
+        pad.follow = true;
+        anchor = null;
+        if (scope) focusMap();
+        return;
+      }
+      if (document.activeElement !== root) return;
+      if (action === 'confirm') {
+        event.preventDefault();
+        const target = pad.target;
+        const pick = latest.current.onPick;
+        if (target === null) {
+          if (pick) showPadNote('Move the cursor onto a Binary Grace to travel there.');
+        } else if (target === latest.current.here) {
+          showPadNote('You are resting at this Binary Grace.');
+        } else if (!pick) {
+          showPadNote('You can only travel while resting at a Binary Grace.');
+        } else {
+          pick(target);
+        }
+        return;
+      }
+      if (action === 'up' || action === 'down' || action === 'left' || action === 'right') {
+        if (!pad.placed) placeCursor(true);
+        else cursorIntoView();
+        const dx = action === 'left' ? -1 : action === 'right' ? 1 : 0;
+        const dy = action === 'up' ? -1 : action === 'down' ? 1 : 0;
+        // With no grace that way, the highlight leaves the map for the buttons around it.
+        if (stepToGrace(dx, dy)) event.preventDefault();
+      }
+    };
+
+    /** Keeps the cursor's name plate, highlight and hints in step with the controller. Runs each frame. */
+    const syncPad = (time: number, seconds: number) => {
+      // Hidden while another screen sits over this one and holds the controller.
+      const covered = !!scope && !scope.contains(document.activeElement);
+      const shown = getInputDevice() !== 'keyboard' && pad.placed && !covered;
+      const focused = document.activeElement === root;
+      const on = shown ? graceNear(pad.x, pad.z, CURSOR_ON) : null;
+      const target = on?.id ?? null;
+      const lockGoal = target !== null && !pad.pushing ? 1 : 0;
+      pad.lock += (lockGoal - pad.lock) * (reduceMotion.matches ? 1 : 1 - Math.exp(-seconds * 14));
+      if (target !== pad.target) {
+        pad.target = target;
+        setPadTarget(target);
+      }
+      if (focused !== pad.focused) {
+        pad.focused = focused;
+        setPadFocused(focused);
+      }
+      if (!shown) return;
+      const x = on ? screenX(on.x) : screenX(pad.x);
+      const y = on ? screenY(on.z) : screenY(pad.z);
+      drawReticle(screenX(pad.x), screenY(pad.z), pad.lock, time, !focused && !!scope);
+      placePlaque(x, y);
     };
 
     const drawName = (target: CanvasRenderingContext2D, name: string, x: number, y: number) => {
@@ -839,7 +1258,9 @@ export function WorldMap({
 
       // Opens on the whole world, so that the citadel you're heading for is in view from the first moment.
       opened = true;
-      stepCamera(seconds);
+      bindScope();
+      placeCursor(false, me);
+      stepCamera(seconds, time);
 
       if (layerStale || camera.x !== layerCamera.x || camera.z !== layerCamera.z || camera.zoom !== layerCamera.zoom) paintLayer();
       context.drawImage(layer, 0, 0);
@@ -851,7 +1272,7 @@ export function WorldMap({
           if (!litNow.includes(grace.id)) continue;
           const x = screenX(grace.x);
           const y = screenY(grace.z);
-          const bright = grace.id === hereNow || grace.id === hover;
+          const bright = grace.id === hereNow || grace.id === hover || grace.id === pad.target;
           const pulse = 0.72 + 0.28 * Math.sin(time / 620 + grace.id * 1.7);
           const glowSize = sprites.glow.width * (bright ? 1.25 : 0.9) * (0.94 + 0.08 * pulse);
           context.globalCompositeOperation = 'screen';
@@ -861,7 +1282,8 @@ export function WorldMap({
           context.globalAlpha = 1;
           const mark = sprites.grace;
           context.drawImage(mark, Math.round(x - mark.width / 2), Math.round(y - mark.height / 2));
-          const shown = bright ? 1 : nameFade;
+          // The controller's name plate already names the grace under the cursor.
+          const shown = grace.id === pad.target && getInputDevice() !== 'keyboard' ? 0 : bright ? 1 : nameFade;
           if (shown > 0) {
             const name = sprites.graces.get(grace.id);
             if (name) {
@@ -897,6 +1319,7 @@ export function WorldMap({
       });
 
       if (me) drawArrow(screenX(me.x), screenY(me.z), me.yaw, time);
+      syncPad(time, seconds);
 
       if (!painting) {
         context.textAlign = 'center';
@@ -920,12 +1343,16 @@ export function WorldMap({
       event.stopPropagation();
       const lines = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 120 : 1;
       const { x, y } = toCanvas(event);
+      pad.follow = false;
       zoomAt(Math.exp(-event.deltaY * lines * WHEEL_SPEED), x, y);
     };
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
       drag = { x: event.clientX, y: event.clientY, moved: false, id: event.pointerId };
+      // The mouse has the camera now.
+      pad.follow = false;
+      pad.goal = null;
       canvas.setPointerCapture(event.pointerId);
     };
 
@@ -983,6 +1410,7 @@ export function WorldMap({
     canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', onPointerUp);
     canvas.addEventListener('pointerleave', onPointerLeave);
+    window.addEventListener('padnav', onPadNav);
     setCursor('grab');
     frame = requestAnimationFrame(draw);
 
@@ -1034,6 +1462,8 @@ export function WorldMap({
       canvas.removeEventListener('pointerup', onPointerUp);
       canvas.removeEventListener('pointercancel', onPointerUp);
       canvas.removeEventListener('pointerleave', onPointerLeave);
+      window.removeEventListener('padnav', onPadNav);
+      unbindScope();
       painting?.close();
       surround?.close();
       freePlate(plate);
@@ -1044,23 +1474,64 @@ export function WorldMap({
     };
   }, []);
 
+  const padOn = device !== 'keyboard';
+  const target = padTarget === null ? null : MAP.graces.find((grace) => grace.id === padTarget) ?? null;
+  const hints: PadHint[] = [
+    { button: 'leftStick', label: 'Move' },
+    { button: 'rightStick', label: 'Next grace' },
+    { button: 'triggers', label: 'Zoom' },
+    ...(padFindMe ? [{ button: 'x' as const, label: 'Find me' }] : []),
+    ...(onPick ? [{ button: 'confirm' as const, label: 'Travel' }] : []),
+    ...(padTabs ? [{ button: 'tabs' as const, label: 'Switch tab' }] : []),
+    { button: 'back', label: 'Back' },
+  ];
+
   return (
-    <div className="world-map">
+    <div
+      ref={rootRef}
+      className="world-map"
+      // The controller can land on the map itself. It draws its own highlight, so the shared ring and scale-up stay off.
+      data-pad-item
+      data-pad-default
+      data-pad-noring
+      data-pad-noscale
+      aria-label="World map. Move the cursor with the left stick."
+    >
       <canvas ref={canvasRef} className="world-map__canvas" aria-label="Map of the world" />
       <div className="world-map__frame" />
+      {padOn && target && (
+        <div ref={plaqueRef} className="world-map__plaque" aria-live="polite">
+          <strong className="world-map__plaque-name">{target.name}</strong>
+          <span className="world-map__plaque-action">
+            {target.id === here ? (
+              'You are resting here'
+            ) : onPick ? (
+              <>
+                <PadGlyph button="confirm" /> Travel here
+              </>
+            ) : (
+              'Rest at a Binary Grace to travel'
+            )}
+          </span>
+        </div>
+      )}
+      {/* While the map holds the highlight its own buttons show, over any screen's; otherwise the screen's, if it has any. */}
+      <PadHints hints={hints} priority={padFocused ? 3 : -0.5} />
     </div>
   );
 }
 
 /** What the marks on the map mean. */
 export function WorldMapLegend() {
+  const device = useInputDevice();
   return (
     <ul className="world-map__legend">
       <li><span className="world-map__mark world-map__mark--me" /> You</li>
       <li><span className="world-map__mark world-map__mark--grace" /> Binary Grace you have found</li>
       <li><span className="world-map__mark world-map__mark--player" /> Other players</li>
       <li><span className="world-map__mark world-map__mark--unexplored" /> Not yet explored</li>
-      <li className="world-map__hint">Scroll to zoom, drag to move</li>
+      {/* A controller has the hint bar along the bottom instead. */}
+      {device === 'keyboard' && <li className="world-map__hint">Scroll to zoom, drag to move</li>}
     </ul>
   );
 }

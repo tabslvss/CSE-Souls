@@ -9,7 +9,14 @@ const listeners = new Set<() => void>();
 
 /** Browsers only tell us a controller's name, so anything not recognized as PlayStation shows Xbox buttons. */
 export function padFamily(id: string): 'playstation' | 'xbox' {
+  // Xbox pads also call themselves a "Wireless Controller", so they are ruled out first.
+  if (/xbox|xinput|045e/i.test(id)) return 'xbox';
   return /playstation|dualsense|dualshock|sony|054c|wireless controller/i.test(id) ? 'playstation' : 'xbox';
+}
+
+/** True while a controller, of either kind, is the device in use. */
+export function isPadDevice(): boolean {
+  return device !== 'keyboard';
 }
 
 export function getInputDevice(): InputDevice {

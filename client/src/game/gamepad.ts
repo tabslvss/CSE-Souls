@@ -1,10 +1,16 @@
 import { padFamily, getInputDevice, setInputDevice } from './inputDevice';
+import { setGameActive } from '../ui/padNav';
 
 /**
  * Controller support, using Elden Ring's default layout as far as this game has the same actions:
  * R1/RB attack, R3 lock on, Circle/B roll (tap) and run (hold), Cross/A jump, Square/X use potion,
  * Triangle/Y interact, Options/Menu pause, and the small button beside it opens the map. Source: https://eldenring.wiki.gg/wiki/Controls
  * Every other button is left unassigned on purpose.
+ *
+ * Menus: while poll() is told a menu is open, the site-wide controller layer (ui/padNav.ts) moves
+ * the highlight, presses buttons and backs out. This class then only reports Options/Menu as
+ * onMenu('back'), to close the menu with the button that opened it, and the map button as
+ * onAction('map'), so both work the same as Esc and M do on a keyboard.
  */
 
 /** Button numbers in the browser's "standard" controller layout. */
@@ -31,11 +37,9 @@ const WAKE_STICK = 0.5;
 const RUN_HOLD_SECONDS = 0.25;
 const FLICK_ON = 0.75;
 const FLICK_OFF = 0.4;
-const MENU_STICK = 0.6;
-const MENU_FIRST_REPEAT = 0.4;
-const MENU_REPEAT = 0.18;
 
 export type PadAction = 'attack' | 'lock' | 'roll' | 'jump' | 'potion' | 'interact' | 'map' | 'pause';
+/** Only 'back' is sent now. The others stay in the type so older callers still compile. */
 export type MenuNav = 'up' | 'down' | 'confirm' | 'back';
 
 export interface PadEvents {
@@ -84,8 +88,6 @@ export class GamepadInput {
   private circleSeconds = 0;
   private circleArmed = false;
   private flickArmed = true;
-  private menuDirection = 0;
-  private menuWait = 0;
   private wasInMenu = true;
 
   constructor(private readonly events: PadEvents) {
@@ -94,6 +96,8 @@ export class GamepadInput {
 
   /** Call once per frame. The browser has no events for buttons, only their current state. */
   poll(seconds: number, inMenu: boolean): void {
+    // The site's menu layer takes the controller whenever a menu is open, and leaves it alone in play.
+    setGameActive(!inMenu);
     const pads = this.readPads();
     for (const pad of pads) {
       if (pad.index !== this.activeIndex && isBusy(pad)) {
@@ -111,7 +115,7 @@ export class GamepadInput {
     }
     if (active) {
       if (isBusy(active)) setInputDevice(padFamily(active.id));
-      if (inMenu) this.pollMenu(active, seconds);
+      if (inMenu) this.pollMenu(active);
       else this.pollPlay(active, seconds);
     }
     for (const pad of pads) this.wasDown.set(pad.index, pad.buttons.map((button) => button.pressed));
@@ -135,6 +139,7 @@ export class GamepadInput {
   }
 
   dispose(): void {
+    setGameActive(false);
     window.removeEventListener('gamepaddisconnected', this.onDisconnected);
     try {
       void (this.activePad as PadWithRumble | null)?.vibrationActuator?.reset?.()?.catch(() => undefined);
@@ -198,20 +203,10 @@ export class GamepadInput {
     if (this.pressed(pad, BUTTON.options)) this.events.onAction('pause');
   }
 
-  private pollMenu(pad: Gamepad, seconds: number): void {
-    if (this.pressed(pad, BUTTON.cross)) this.events.onMenu('confirm');
-    if (this.pressed(pad, BUTTON.circle) || this.pressed(pad, BUTTON.options)) this.events.onMenu('back');
-
-    const stickY = pad.axes[1] ?? 0;
-    let direction = 0;
-    if (pad.buttons[BUTTON.up]?.pressed || stickY < -MENU_STICK) direction = -1;
-    else if (pad.buttons[BUTTON.down]?.pressed || stickY > MENU_STICK) direction = 1;
-    this.menuWait -= seconds;
-    if (direction !== 0 && (direction !== this.menuDirection || this.menuWait <= 0)) {
-      this.events.onMenu(direction < 0 ? 'up' : 'down');
-      this.menuWait = direction === this.menuDirection ? MENU_REPEAT : MENU_FIRST_REPEAT;
-    }
-    this.menuDirection = direction;
+  /** Everything else in a menu belongs to ui/padNav.ts, so nothing is handled twice. */
+  private pollMenu(pad: Gamepad): void {
+    if (this.pressed(pad, BUTTON.share)) this.events.onAction('map');
+    if (this.pressed(pad, BUTTON.options)) this.events.onMenu('back');
   }
 
   /** True only on the frame a button goes down. */
@@ -228,8 +223,6 @@ export class GamepadInput {
     this.circleArmed = false;
     this.circleSeconds = 0;
     this.flickArmed = false;
-    this.menuDirection = 0;
-    this.menuWait = 0;
   }
 
   private loseActive(): void {

@@ -8,6 +8,7 @@ import { MACE_AND_SHIELD } from './attacks/shield';
 import type { WeaponMoves, WeaponSetup } from './attacks/types';
 
 export type * from './attacks/types';
+export { CRITICAL_IMPACT_AT, CRITICAL_SECONDS } from './attacks/types';
 
 /*
  * What every character can hold. Hands follow the weapon, not the other way round: each pose says

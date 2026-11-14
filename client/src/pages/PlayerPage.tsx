@@ -2,6 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, type Player } from '../api';
 import { CharacterSheet } from '../components/CharacterSheet';
+import { PadHints, type PadHint } from '../ui/PadHints';
+
+const HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'scroll', label: 'Scroll' },
+  { button: 'back', label: 'Back' },
+];
 
 export function PlayerPage() {
   const { username = '' } = useParams();
@@ -18,7 +25,7 @@ export function PlayerPage() {
     return (
       <div className="page center">
         <p className="lede">{error}</p>
-        <Link className="btn btn--small" to="/leaderboard">Back to Leaderboard</Link>
+        <Link className="btn btn--small" to="/leaderboard" data-pad-default>Back to Leaderboard</Link>
       </div>
     );
   }
@@ -26,6 +33,7 @@ export function PlayerPage() {
   return (
     <div className="page">
       <CharacterSheet player={player} />
+      <PadHints hints={HINTS} />
     </div>
   );
 }

@@ -1540,6 +1540,189 @@
   color: var(--text-2);
 }
 
+/* The boss's bar: low and wide in the middle, clear of your own bars and the dust counter below it. */
+.boss-hud {
+  position: absolute;
+  left: 50%;
+  bottom: 112px;
+  width: min(720px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  pointer-events: none;
+  animation: boss-hud-in 0.6s ease both;
+}
+
+.boss-hud--fading {
+  animation: boss-hud-out 1.2s ease forwards;
+}
+
+.boss-hud__name {
+  margin: 0 0 6px 2px;
+  font-family: var(--font-display);
+  font-size: clamp(0.9rem, 2.2vw, 1.15rem);
+  letter-spacing: 0.08em;
+  color: var(--gold-pale);
+  text-shadow:
+    0 1px 3px #000,
+    0 0 10px rgba(0, 0, 0, 0.85);
+}
+
+.boss-hud__track {
+  position: relative;
+  height: 12px;
+  background: #060504;
+  box-shadow:
+    inset 0 0 0 1px var(--gold),
+    0 0 0 3px rgba(0, 0, 0, 0.85);
+}
+
+.boss-hud__track span {
+  position: absolute;
+  inset: 2px auto 2px 2px;
+  display: block;
+  max-width: calc(100% - 4px);
+}
+
+.boss-hud__fill {
+  background: linear-gradient(180deg, #c8423b, #6d1a1c);
+  transition: width 0.25s linear;
+}
+
+/* What the last blows took, left pale for a moment before it drains after the red. */
+.boss-hud__chip {
+  background: #e8dcc0;
+  transition: width 0.7s ease 0.45s;
+}
+
+/* Stance: thin and pale gold, so it reads as part of the health bar but never as health. */
+.boss-hud__stance {
+  position: relative;
+  height: 4px;
+  margin-top: 5px;
+  background: rgba(6, 5, 4, 0.85);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.7);
+}
+
+.boss-hud__stance-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  background: linear-gradient(180deg, #f6ebc8, #c9a960);
+  transition: width 0.2s linear;
+}
+
+/* Broken: the bar is the stun running out, lit and glowing. */
+.boss-hud__stance--broken .boss-hud__stance-fill {
+  background: #fff4d6;
+  box-shadow: 0 0 8px 1px rgba(255, 214, 140, 0.85);
+  transition: width 0.1s linear;
+}
+
+.boss-hud__stance-flash {
+  position: absolute;
+  inset: -6px -4px;
+  display: block;
+  background: radial-gradient(ellipse at center, rgba(255, 246, 220, 0.95), rgba(255, 210, 130, 0) 70%);
+  opacity: 0;
+  animation: boss-stance-break 0.9s ease-out;
+}
+
+/* Above the name, so showing it never moves the bars. */
+.boss-hud__crit {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  padding: 6px 16px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: rgba(8, 7, 6, 0.75);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--text-2);
+  font-size: 0.95rem;
+}
+
+.boss-hud__crit--ready {
+  color: #fff4d6;
+  font-family: var(--font-display);
+  letter-spacing: 0.08em;
+  box-shadow:
+    inset 0 0 0 1px var(--gold),
+    0 0 18px rgba(255, 200, 110, 0.35);
+  animation: boss-crit-ready 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes boss-stance-break {
+  0% { opacity: 1; transform: scaleX(0.9); }
+  100% { opacity: 0; transform: scaleX(1.15); }
+}
+
+@keyframes boss-crit-ready {
+  0% { box-shadow: inset 0 0 0 1px var(--gold), 0 0 10px rgba(255, 200, 110, 0.2); }
+  100% { box-shadow: inset 0 0 0 1px var(--gold), 0 0 22px rgba(255, 200, 110, 0.55); }
+}
+
+/* A critical's damage over the boss: page text, so it stays sharp above the dithered picture. */
+.crit-number {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-display);
+  font-size: clamp(1.6rem, 4vw, 2.4rem);
+  font-weight: 700;
+  color: #f6ebc8;
+  text-shadow:
+    0 2px 0 #000,
+    0 0 14px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+  animation: crit-number 1.8s ease-out forwards;
+}
+
+.crit-number--mine {
+  font-size: clamp(2.2rem, 6vw, 3.6rem);
+  color: #ffe9a8;
+}
+
+@keyframes crit-number {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(1.8); }
+  8% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  70% { opacity: 1; transform: translate(-50%, -110%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -150%) scale(0.95); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boss-hud__crit--ready,
+  .boss-hud__stance-flash,
+  .crit-number {
+    animation-duration: 0.01s;
+  }
+
+  .crit-number {
+    animation: none;
+  }
+}
+
+@keyframes boss-hud-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@keyframes boss-hud-out {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (max-width: 560px) {
+  .boss-hud {
+    bottom: 100px;
+  }
+
+  .boss-hud__track {
+    height: 9px;
+  }
+}
+
 .game__message {
   position: absolute;
   top: 18%;

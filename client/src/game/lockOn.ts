@@ -34,6 +34,8 @@ export interface LockTarget {
   x: number;
   y: number;
   z: number;
+  /** How far its body reaches from its middle. Ranges are measured to its side, so a huge one isn't out of reach while you stand at its flank. */
+  reach?: number;
 }
 
 export interface LockSource {
@@ -50,6 +52,7 @@ export class LockOn {
   private readonly toTarget = new THREE.Vector3();
   private readonly screen = new THREE.Vector3();
   private targetId: number | null = null;
+  private targetReach = 0;
   private playerX = 0;
   private playerZ = 0;
   private sightWait = 0;
@@ -88,6 +91,16 @@ export class LockOn {
     return this.targetId ?? 0;
   }
 
+  /** How far the target's body reaches from its middle: 0 for an ordinary animal, large for a boss. */
+  get reach(): number {
+    return this.targetId === null ? 0 : this.targetReach;
+  }
+
+  /** Hides the marker for a moment, as during a critical, without letting go of the target. */
+  setHidden(hidden: boolean): void {
+    this.marker.visible = !hidden;
+  }
+
   /** Where the target's chest is, or null with no target. */
   get aim(): THREE.Vector3 | null {
     return this.targetId === null ? null : this.chest;
@@ -109,7 +122,7 @@ export class LockOn {
     this.camera.getWorldDirection(this.forward);
     const scored: Array<{ target: LockTarget; score: number }> = [];
     for (const target of this.source.livingTargets()) {
-      const distance = Math.hypot(target.x - playerX, target.z - playerZ);
+      const distance = Math.max(0, Math.hypot(target.x - playerX, target.z - playerZ) - (target.reach ?? 0));
       if (distance > ACQUIRE_RANGE) continue;
       this.toTarget.set(target.x, target.y, target.z).sub(this.camera.position).normalize();
       if (this.toTarget.dot(this.forward) < ACQUIRE_CONE_COS) continue;
@@ -145,7 +158,7 @@ export class LockOn {
     const scored: Array<{ target: LockTarget; score: number }> = [];
     for (const target of this.source.livingTargets()) {
       if (target.id === this.targetId) continue;
-      if (Math.hypot(target.x - this.playerX, target.z - this.playerZ) > ACQUIRE_RANGE) continue;
+      if (Math.hypot(target.x - this.playerX, target.z - this.playerZ) - (target.reach ?? 0) > ACQUIRE_RANGE) continue;
       this.screen.set(target.x, target.y, target.z).project(this.camera);
       if (this.screen.z > 1 || Math.abs(this.screen.x) > SCREEN_EDGE || Math.abs(this.screen.y) > SCREEN_EDGE) continue;
       const offsetX = this.screen.x - fromX;
@@ -172,7 +185,7 @@ export class LockOn {
       this.release();
       return;
     }
-    if (Math.hypot(this.chest.x - playerX, this.chest.z - playerZ) > RELEASE_RANGE) {
+    if (Math.hypot(this.chest.x - playerX, this.chest.z - playerZ) - this.targetReach > RELEASE_RANGE) {
       this.release();
       return;
     }
@@ -192,13 +205,15 @@ export class LockOn {
     if (!this.source.copyLivingChest(this.targetId, this.chest)) return;
     this.marker.position.copy(this.chest);
     this.marker.quaternion.copy(this.camera.quaternion);
-    const size = Math.max(MARKER_MIN_SIZE, this.camera.position.distanceTo(this.chest) * MARKER_SIZE);
+    // A huge target gets a slightly larger mark, so it isn't a speck on its chest.
+    const size = Math.max(MARKER_MIN_SIZE, this.camera.position.distanceTo(this.chest) * MARKER_SIZE) * (1 + this.targetReach * 0.08);
     this.marker.scale.setScalar(size);
   }
 
   /** Takes off the marker and forgets the target. The camera eases back by itself as it stops being steered. */
   release(): void {
     this.targetId = null;
+    this.targetReach = 0;
     this.unseen = 0;
     this.flickX = 0;
     this.flickY = 0;
@@ -217,6 +232,7 @@ export class LockOn {
     for (const { target } of scored) {
       if (segmentBlocked(this.playerX, this.playerZ, target.x, target.z)) continue;
       this.targetId = target.id;
+      this.targetReach = target.reach ?? 0;
       this.chest.set(target.x, target.y, target.z);
       this.unseen = 0;
       this.sightWait = SIGHT_CHECK_SECONDS;

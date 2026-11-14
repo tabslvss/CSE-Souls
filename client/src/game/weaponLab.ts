@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { DEFAULT_APPEARANCE, type ClassId } from '../../../shared/classes';
 import { WEAPONS, weaponFor } from '../../../shared/combat';
 import { DODGE_SECONDS, STAGGER_SECONDS, type AnimationId } from '../../../shared/sim';
-import { ARMORY } from './armory';
+import { ARMORY, CRITICAL_IMPACT_AT, CRITICAL_SECONDS } from './armory';
 import { createCharacter, type CharacterModel } from './characters';
 
 /*
@@ -12,6 +12,8 @@ import { createCharacter, type CharacterModel } from './characters';
  */
 
 const FRAME = 1 / 60;
+/** What the page can play: the game's animations, and a weapon's critical on a stunned boss. */
+type LabAnimation = AnimationId | 'critical';
 /** Seconds shown of animations that have no fixed length of their own. */
 const SHOWN_SECONDS: Partial<Record<AnimationId, number>> = {
   idle: 3.6,
@@ -33,8 +35,16 @@ const sun = new THREE.DirectionalLight(0xffffff, 2);
 sun.position.set(2, 4, 3);
 scene.add(sun);
 // Quarter-meter squares, so that a foot sliding along the ground is easy to see.
-const floor = new THREE.GridHelper(8, 32, 0x30343a, 0x70757c);
+const floor = new THREE.GridHelper(16, 64, 0x30343a, 0x70757c);
 scene.add(floor);
+// The stand-in for a stunned boss during a critical: 6 m tall, its middle 4 m in front.
+const BOSS_HEIGHT = 6;
+const BOSS_DISTANCE = 4;
+const bossBlock = new THREE.Mesh(new THREE.BoxGeometry(2.4, BOSS_HEIGHT, 1.2), new THREE.MeshLambertMaterial({ color: 0x5c6066 }));
+bossBlock.position.set(0, BOSS_HEIGHT / 2, BOSS_DISTANCE);
+bossBlock.visible = false;
+scene.add(bossBlock);
+const rootShift = new THREE.Vector3();
 const facing = new THREE.Line(
   new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0.002, 0), new THREE.Vector3(0, 0.002, 1)]),
   new THREE.LineBasicMaterial({ color: 0xc02020 }),
@@ -71,18 +81,26 @@ async function modelFor(classId: ClassId, variant: number, body: number): Promis
   return model;
 }
 
+/** Moves the whole character by the critical's dash or leap, as the game will. */
+function placeRoot(character: CharacterModel): void {
+  character.root.position.copy(character.criticalRootOffset(rootShift));
+}
+
 function step(character: CharacterModel, seconds: number): void {
   let left = seconds;
   while (left > 1e-6) {
     const dt = Math.min(FRAME, left);
     character.update(dt);
+    placeRoot(character);
     left -= dt;
   }
 }
 
 function settle(character: CharacterModel): void {
+  character.cancelCritical();
   character.play('idle', true);
   step(character, 0.8);
+  placeRoot(character);
 }
 
 /** Starts attack number index. With combo, the attack before it plays first, all the way through. */
@@ -96,17 +114,25 @@ function startAttack(character: CharacterModel, index: number, combo: boolean, c
   character.play('attack', true);
 }
 
-function aim(angle: number, distance: number, height: number): void {
+function aim(angle: number, distance: number, height: number, ahead = 0.3): void {
   const radians = (angle * Math.PI) / 180;
-  camera.position.set(Math.sin(radians) * distance, height + 0.15, Math.cos(radians) * distance + 0.3);
-  camera.lookAt(0, height, 0.3);
+  camera.position.set(Math.sin(radians) * distance, height + 0.15, Math.cos(radians) * distance + ahead);
+  camera.lookAt(0, height, ahead);
+}
+
+/** Further out and between the character and the boss, so a critical's whole sequence fits. */
+const CRITICAL_VIEW = { distance: 12.5, height: 2.3, ahead: 2 };
+
+function view(animation: LabAnimation, angle: number, distance: number | undefined, height: number | undefined, near: number): void {
+  if (animation === 'critical') aim(angle, distance ?? CRITICAL_VIEW.distance, height ?? CRITICAL_VIEW.height, CRITICAL_VIEW.ahead);
+  else aim(angle, distance ?? near, height ?? 1.05);
 }
 
 interface ShowOptions {
   classId: ClassId;
   variant: number;
   body?: number;
-  animation: AnimationId;
+  animation: LabAnimation;
   /** How many seconds into the animation to freeze. */
   at?: number;
   /** Instead of at: what share of the animation to freeze at, from 0 to 1. */
@@ -121,8 +147,15 @@ interface ShowOptions {
   height?: number;
 }
 
-function secondsFor(character: CharacterModel, animation: AnimationId): number {
+function secondsFor(character: CharacterModel, animation: LabAnimation): number {
+  if (animation === 'critical') return CRITICAL_SECONDS;
   return animation === 'attack' ? character.attackSeconds : SHOWN_SECONDS[animation] ?? 1;
+}
+
+function begin(character: CharacterModel, animation: LabAnimation): void {
+  bossBlock.visible = animation === 'critical';
+  if (animation === 'critical') character.playCritical(CRITICAL_SECONDS);
+  else character.play(animation, true);
 }
 
 /** Freezes a moment of an animation and draws it. Returns the arms' stretch: above 1, a hand can't get there. */
@@ -132,8 +165,10 @@ async function show(options: ShowOptions): Promise<number> {
   impactMark.visible = false;
   settle(character);
   const count = ARMORY[options.classId][options.variant].attacks.length;
-  if (options.animation === 'attack') startAttack(character, options.attackIndex ?? 0, !!options.combo, count);
-  else character.play(options.animation, true);
+  if (options.animation === 'attack') {
+    bossBlock.visible = false;
+    startAttack(character, options.attackIndex ?? 0, !!options.combo, count);
+  } else begin(character, options.animation);
   const seconds =
     options.phase !== undefined ? options.phase * secondsFor(character, options.animation) : options.at ?? 0;
   step(character, seconds);
@@ -143,7 +178,7 @@ async function show(options: ShowOptions): Promise<number> {
   renderer.setSize(window.innerWidth, window.innerHeight);
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  aim(options.angle, options.distance ?? 4.2, options.height ?? 1.05);
+  view(options.animation, options.angle, options.distance, options.height, 4.2);
   renderer.render(scene, camera);
   return character.armStretch();
 }
@@ -152,8 +187,8 @@ interface StripOptions {
   classId: ClassId;
   variant: number;
   body?: number;
-  /** An attack's number in the weapon's list, or the name of another animation. */
-  what: number | AnimationId;
+  /** An attack's number in the weapon's list, or the name of another animation, or 'critical'. */
+  what: number | LabAnimation;
   combo?: boolean;
   angles: number[];
   frames: number;
@@ -165,6 +200,10 @@ interface StripOptions {
 
 interface StripFrame {
   phase: number;
+  /** During a critical: where the keys are, which differs from phase under a time warp. */
+  keyPhase?: number;
+  /** During a critical: playback speed of the body against real time. */
+  timeScale?: number;
   armStretch: number;
   legStretch: number;
   wristRoll: number;
@@ -179,23 +218,36 @@ interface StripResult {
   highestLegStretch: number;
   /** How far the weapon's tip travels through the whole animation, in meters. */
   tipPathLength: number;
+  /** For a critical: its marks, in real time. */
+  marks?: Record<string, number>;
+  /** For a critical: the character's furthest offset forward and up, in meters. */
+  furthestForward?: number;
+  highestUp?: number;
 }
 
 const LABEL_HEIGHT = 18;
+/** A second line under each frame of a critical: the phase, and any mark that falls on it. */
+const FOOTER_HEIGHT = 18;
 
 async function makeStrip(options: StripOptions): Promise<StripResult> {
   const character = await modelFor(options.classId, options.variant, options.body ?? 0);
   const setup = ARMORY[options.classId][options.variant];
   const isAttack = typeof options.what === 'number';
-  const animation: AnimationId = typeof options.what === 'number' ? 'attack' : options.what;
+  const animation: LabAnimation = typeof options.what === 'number' ? 'attack' : options.what;
+  const isCritical = animation === 'critical';
   const attackIndex = typeof options.what === 'number' ? options.what : 0;
   const seconds = secondsFor(character, animation);
-  const hitAt = isAttack ? character.impactKeyAt(attackIndex) : null;
+  const hitAt = isAttack ? character.impactKeyAt(attackIndex) : isCritical ? CRITICAL_IMPACT_AT : null;
+  const footer = isCritical ? FOOTER_HEIGHT : 0;
+  let furthestForward = 0;
+  let highestUp = 0;
 
-  const begin = () => {
+  const start = () => {
     settle(character);
-    if (isAttack) startAttack(character, attackIndex, !!options.combo, setup.attacks.length);
-    else character.play(animation, true);
+    if (isAttack) {
+      bossBlock.visible = false;
+      startAttack(character, attackIndex, !!options.combo, setup.attacks.length);
+    } else begin(character, animation);
   };
 
   // First pass: where the weapon's tip goes.
@@ -204,13 +256,16 @@ async function makeStrip(options: StripOptions): Promise<StripResult> {
   const last = new THREE.Vector3();
   let tipPathLength = 0;
   impactMark.visible = false;
-  begin();
+  start();
   character.update(0);
   character.weaponTip(last);
   positions.setXYZ(0, last.x, last.y, last.z);
   const steps = Math.min(TRAIL_POINTS - 1, Math.max(1, Math.round(seconds / FRAME)));
   for (let i = 1; i <= steps; i += 1) {
     character.update(seconds / steps);
+    placeRoot(character);
+    furthestForward = Math.max(furthestForward, character.root.position.z);
+    highestUp = Math.max(highestUp, character.root.position.y);
     character.weaponTip(point);
     positions.setXYZ(i, point.x, point.y, point.z);
     tipPathLength += point.distanceTo(last);
@@ -222,14 +277,14 @@ async function makeStrip(options: StripOptions): Promise<StripResult> {
   }
   positions.needsUpdate = true;
   trail.geometry.setDrawRange(0, steps + 1);
-  trail.visible = isAttack;
+  trail.visible = isAttack || isCritical;
 
   // Second pass: the film strip itself.
   const cellWidth = options.cellWidth ?? 300;
   const cellHeight = options.cellHeight ?? 340;
   const sheet = document.createElement('canvas');
   sheet.width = cellWidth * options.frames;
-  sheet.height = (cellHeight + LABEL_HEIGHT) * options.angles.length;
+  sheet.height = (cellHeight + LABEL_HEIGHT + footer) * options.angles.length;
   const ctx = sheet.getContext('2d')!;
   ctx.fillStyle = '#20242a';
   ctx.fillRect(0, 0, sheet.width, sheet.height);
@@ -239,23 +294,29 @@ async function makeStrip(options: StripOptions): Promise<StripResult> {
   camera.updateProjectionMatrix();
 
   const frames: StripFrame[] = [];
-  begin();
+  const marks = isCritical ? { ...character.criticalMarks() } : undefined;
+  const markNames = marks ? Object.keys(marks) : [];
+  start();
   let clock = 0;
   for (let f = 0; f < options.frames; f += 1) {
     const phase = options.frames > 1 ? f / (options.frames - 1) : 0;
-    step(character, phase * seconds - clock);
-    clock = phase * seconds;
+    // The very end of a critical hands over to idle, so the last frame stops just short of it.
+    const target = isCritical ? Math.min(phase, 1 - 1e-4) * seconds : phase * seconds;
+    step(character, target - clock);
+    clock = target;
     character.update(0);
+    placeRoot(character);
     frames.push({
       phase,
+      ...(isCritical ? { keyPhase: character.criticalKeyPhase(), timeScale: character.criticalTimeScale() } : {}),
       armStretch: character.armStretch(),
       legStretch: character.legStretch(),
       wristRoll: character.wristRoll(),
     });
     options.angles.forEach((angle, row) => {
-      aim(angle, options.distance ?? 5, options.height ?? 1.05);
+      view(animation, angle, options.distance, options.height, 5);
       renderer.render(scene, camera);
-      const y = row * (cellHeight + LABEL_HEIGHT);
+      const y = row * (cellHeight + LABEL_HEIGHT + footer);
       ctx.drawImage(renderer.domElement, f * cellWidth, y + LABEL_HEIGHT, cellWidth, cellHeight);
       const nearImpact = hitAt !== null && Math.abs(phase - hitAt) <= 0.5 / Math.max(1, options.frames - 1);
       ctx.fillStyle = nearImpact ? '#ff7070' : '#e8e8e8';
@@ -266,10 +327,23 @@ async function makeStrip(options: StripOptions): Promise<StripResult> {
         f * cellWidth + 4,
         y + 13,
       );
+      if (isCritical) {
+        const half = 0.5 / Math.max(1, options.frames - 1);
+        const here = markNames.filter((name) => Math.abs(marks![name] - phase) <= half);
+        const { keyPhase, timeScale } = frames[f];
+        ctx.fillStyle = nearImpact ? '#ff7070' : here.length ? '#ffd060' : '#c8d0d8';
+        ctx.fillText(
+          `phase ${phase.toFixed(3)}  keys ${keyPhase!.toFixed(3)}  x${timeScale!.toFixed(2)}${here.length ? '  ' + here.join(' ') : ''}`,
+          f * cellWidth + 4,
+          y + LABEL_HEIGHT + cellHeight + 13,
+        );
+      }
     });
   }
   trail.visible = false;
   impactMark.visible = false;
+  bossBlock.visible = false;
+  settle(character);
   renderer.setSize(window.innerWidth, window.innerHeight);
   return {
     png: sheet.toDataURL('image/png'),
@@ -279,8 +353,10 @@ async function makeStrip(options: StripOptions): Promise<StripResult> {
     highestArmStretch: Math.max(...frames.map((frame) => frame.armStretch)),
     highestLegStretch: Math.max(...frames.map((frame) => frame.legStretch)),
     tipPathLength,
+    ...(isCritical ? { marks, furthestForward, highestUp } : {}),
   };
 }
+
 
 // One at a time, because several scripts can share this page.
 let queue: Promise<unknown> = Promise.resolve();
@@ -313,6 +389,25 @@ function validate(): string[] {
           if (k > 0 && key.at <= attack.keys![k - 1].at) issues.push(`${name}: key ${k} is out of order`);
         });
       });
+      const critical = setup.critical;
+      if (critical) {
+        const name = `${setup.label} critical`;
+        const impacts = critical.keys.filter((key) => key.impact);
+        if (impacts.length !== 1) issues.push(`${name}: has ${impacts.length} impact keys`);
+        else if (impacts[0].at !== CRITICAL_IMPACT_AT) issues.push(`${name}: impact at ${impacts[0].at}, should be ${CRITICAL_IMPACT_AT}`);
+        critical.keys.forEach((key, k) => {
+          if (k > 0 && key.at <= critical.keys[k - 1].at) issues.push(`${name}: key ${k} is out of order`);
+        });
+        const path = critical.rootPath;
+        const end = path?.[path.length - 1];
+        if (end && (Math.abs(end.forward - critical.travel) > 1e-6 || Math.abs(end.up ?? 0) > 1e-6)) {
+          issues.push(`${name}: rootPath ends at ${end.forward} forward and ${end.up ?? 0} up, not ${critical.travel} and 0`);
+        }
+        for (const [mark, at] of Object.entries(critical.marks ?? {})) {
+          if (!(at >= 0 && at <= 1)) issues.push(`${name}: mark ${mark} at ${at} is outside 0 to 1`);
+        }
+        if (critical.timeWarp?.some((key) => !(key.speed > 0))) issues.push(`${name}: a timeWarp speed is not above 0`);
+      }
     });
   }
   return issues;

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { WEAPON_STYLES, type WeaponStyle } from '../../../../shared/combat';
 import { ARCANE_BLUE, ARCANE_WHITE, ArcaneFx, LIGHT_ARCANE_BLUE } from './arcane';
 import { ATLAS } from './atlas';
+import { BossFx } from './boss';
 import { CorpseDissolver } from './dissolve';
 import { HealRibbons } from './healRibbons';
 import {
@@ -154,6 +155,8 @@ export class GameFx {
   groundY = 0;
   /** Every spell's bolts, crescents, meteors and light. */
   readonly arcane: ArcaneFx;
+  /** The Great Bull's ground warnings, fireballs and heavy moves. */
+  readonly boss: BossFx;
 
   private readonly pool: ParticlePool;
   private readonly trails: TrailPool;
@@ -196,6 +199,7 @@ export class GameFx {
     scene.add(this.pool.mesh);
     this.healing = new HealRibbons(scene, this.pool);
     this.arcane = new ArcaneFx(scene, camera, this.pool, (x, y, z, color, intensity, decay) => this.lightAt(x, y, z, color, intensity, decay));
+    this.boss = new BossFx(scene, this.pool, (x, y, z, color, intensity, decay) => this.lightAt(x, y, z, color, intensity, decay));
 
     const color = (values: readonly [number, number, number]) => new THREE.Color(values[0], values[1], values[2]);
     this.trails = new TrailPool(
@@ -238,6 +242,7 @@ export class GameFx {
     this.corpses.update(seconds);
     this.healing.update(seconds);
     this.arcane.update(seconds);
+    this.boss.update(seconds);
     const fog = this.scene.fog;
     if (fog instanceof THREE.Fog) this.pool.setFog(fog.near, fog.far, fog.color);
 
@@ -286,6 +291,7 @@ export class GameFx {
     this.corpses.dispose();
     this.healing.dispose();
     this.arcane.dispose();
+    this.boss.dispose();
     this.atlas.dispose();
     this.digits.dispose();
     this.arrows.geometry.dispose();

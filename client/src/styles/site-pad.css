@@ -1,0 +1,272 @@
+/*
+ * The controller look for the site's own pages (everything outside the game).
+ * Shared rules live in pad.css; this file only tunes single screens. Like pad.css, everything
+ * here applies only while a controller is the device in use (html.pad-active).
+ */
+
+/* ---------- A gentle note for things the controller cannot do, such as typing ---------- */
+
+.pad-tip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--gold);
+  background: linear-gradient(90deg, rgba(201, 164, 92, 0.1), rgba(201, 164, 92, 0.02));
+  font-size: 1rem;
+  line-height: 1.35;
+  text-align: left;
+  color: var(--text-2);
+  animation: site-pad-fade 0.3s ease;
+}
+
+.pad-tip::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  rotate: 45deg;
+  background: var(--gold-bright);
+  box-shadow: 0 0 8px var(--glow);
+}
+
+@keyframes site-pad-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Achievement toasts sit above the hint bar instead of under it. */
+html.pad-active .toasts {
+  bottom: 84px;
+}
+
+/* ---------- Form fields: the focused field reads clearly ---------- */
+
+html.pad-active .field input:focus {
+  border-color: var(--gold-bright);
+  background-color: rgba(201, 164, 92, 0.08);
+}
+
+html.pad-active .field__action:focus {
+  color: var(--gold-pale);
+}
+
+/* ---------- Tabs: the focused tab lifts out of the row ---------- */
+
+html.pad-active .tabs__tab:focus {
+  color: var(--gold-pale);
+  background: rgba(201, 164, 92, 0.1);
+}
+
+/* ---------- Leaderboard: the whole row lights up with its player ---------- */
+
+html.pad-active .ranks tr:has(.ranks__player:focus) td {
+  background: rgba(201, 164, 92, 0.12);
+  color: var(--gold-pale);
+}
+
+html.pad-active .ranks tr:has(.ranks__player:focus) td:first-child {
+  box-shadow: inset 2px 0 0 var(--gold-bright);
+}
+
+/* The row carries the highlight, so the link inside it stays calm. */
+html.pad-active .ranks__player:focus {
+  background: none;
+  box-shadow: none;
+  scale: none;
+  animation: none;
+  color: var(--gold-pale);
+}
+
+/* ---------- Home and achievements: content cards the highlight can rest on ---------- */
+
+html.pad-active .deeds > li:focus {
+  outline: none;
+}
+
+html.pad-active .deeds > li:focus .deed {
+  background:
+    radial-gradient(ellipse at 30% 50%, rgba(201, 164, 92, 0.16), transparent 70%),
+    linear-gradient(180deg, var(--surface-3), var(--surface-2));
+  box-shadow:
+    inset 0 0 0 1px var(--gold-bright),
+    0 0 26px var(--glow);
+}
+
+/* A locked achievement is read in full while it has the highlight. */
+html.pad-active .deeds > li:focus .deed__inner[data-unlocked='false'] h3 {
+  color: var(--gold-bright);
+}
+
+html.pad-active .deeds > li:focus .deed__inner[data-unlocked='false'] p {
+  color: var(--text-2);
+}
+
+html.pad-active .deeds > li:focus,
+html.pad-active .class-tile:focus,
+html.pad-active .area:focus,
+html.pad-active .boss__text:focus,
+html.pad-active .gameplay__panel:focus,
+html.pad-active .features > li:focus {
+  box-shadow:
+    0 0 0 1px rgba(236, 213, 155, 0.85),
+    0 0 22px var(--glow);
+}
+
+html.pad-active :is(.features > li, .boss__text):focus {
+  background: rgba(201, 164, 92, 0.06);
+}
+
+/* Large blocks of text only need the frame, not the slight zoom. */
+html.pad-active :is(.boss__text, .gameplay__panel):focus {
+  scale: none;
+  animation: none;
+}
+
+/* ---------- Character creation ---------- */
+
+.create__steps .create__step-glyph {
+  display: inline-flex;
+  align-items: center;
+}
+
+.create__step-glyph .input-glyph {
+  width: 26px;
+  height: 26px;
+}
+
+/* The hint bar runs along the bottom, so the buttons and panels move up to clear it. */
+@media (min-width: 1001px) {
+  html.pad-active .create__actions {
+    padding-bottom: 70px;
+  }
+
+  html.pad-active .create__panel {
+    bottom: 158px;
+  }
+}
+
+@media (max-width: 1000px) {
+  html.pad-active .create {
+    padding-bottom: 64px;
+  }
+}
+
+/* A floated legend sits inside the row instead of on its border, so the highlight frames it too. */
+html.pad-active .create .option legend {
+  float: left;
+  width: 100%;
+}
+
+html.pad-active .create .option__choices {
+  clear: both;
+}
+
+/* Rows of choices become one item each: left and right change the choice. */
+html.pad-active .create .option[data-pad-item] {
+  position: relative;
+  margin-inline: -10px;
+  padding: 6px 10px 8px;
+  border: 1px solid transparent;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+html.pad-active .create .option[data-pad-item]:focus {
+  border-color: var(--line-strong);
+  background: rgba(201, 164, 92, 0.1);
+}
+
+.option__count {
+  float: right;
+  margin-top: 1px;
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* The fieldset's legend sits on its border, so the count goes in the first line of choices. */
+html.pad-active .create .option[data-pad-item]:focus .option__count {
+  color: var(--gold-bright);
+}
+
+.option__count::before,
+.option__count::after {
+  display: inline-block;
+  color: var(--gold-bright);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.option__count::before {
+  content: '\25C0';
+  margin-right: 8px;
+  font-size: 0.7em;
+}
+
+.option__count::after {
+  content: '\25B6';
+  margin-left: 8px;
+  font-size: 0.7em;
+}
+
+html.pad-active .create .option[data-pad-item]:focus .option__count::before,
+html.pad-active .create .option[data-pad-item]:focus .option__count::after {
+  opacity: 1;
+}
+
+html.pad-active .create .option[data-pad-item]:focus .chip[aria-pressed='true'] {
+  border-color: var(--gold-pale);
+  box-shadow: 0 0 10px var(--glow);
+}
+
+html.pad-active .create .class-card:focus:not([aria-checked='true']) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+/* ---------- Profile picture picker ---------- */
+
+/* The picker sits above everything else on the page, so it carries its own hint row. */
+.picker .pad-hints--inline {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+html.pad-active .picker__tile:focus {
+  border-color: var(--gold-bright);
+  color: var(--gold-pale);
+}
+
+/*
+ * The open picker sits in the browser's top layer, above the gliding highlight, so its focused
+ * item carries a stronger frame of its own.
+ */
+html.pad-active .picker :is(button, a):focus {
+  outline: 2px solid var(--gold-bright);
+  outline-offset: 3px;
+  box-shadow:
+    0 0 0 1px var(--black),
+    0 0 24px rgba(236, 200, 120, 0.55);
+}
+
+/* The page's own hint bar would only show dimmed behind the picker, next to the picker's hints. */
+body:has(dialog.picker[open]) > .pad-hints-bar {
+  visibility: hidden;
+}
+
+html.pad-active .picker__close:focus {
+  color: var(--gold-pale);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pad-tip {
+    animation: none;
+  }
+}

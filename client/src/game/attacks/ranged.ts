@@ -1,4 +1,4 @@
-import type { Attack, AttackKey, FreeHand, Pose, StanceLife, Vec3, WeaponMoves } from './types';
+import type { Attack, AttackKey, CriticalMoves, Ease, FreeHand, Pose, RootKey, SpeedKey, StanceLife, Vec3, WeaponMoves } from './types';
 
 /*
  * Archery: a right-handed archer holds the bow in the left hand and draws with the right. `edge` is
@@ -190,6 +190,215 @@ const LONGBOW_SHOT: AttackKey[] = withSteps([
   { at: 0.97, footR: [0.15, -0.11, 0] },
 ]);
 
+/*
+ * Criticals. These move the whole character, so the feet are planned on the ground rather than under the
+ * body: a planted foot keeps its spot on the ground while the root travels over it, and the keys get its
+ * place under the body worked out at every sample. The body is sampled just as densely along its own eased
+ * curves, so footsteps never flatten a strike's ease.
+ */
+
+/** One point on a foot's path: [right, forward, lift], on the ground from where the critical started, or under the body when `local`. */
+interface FootMark {
+  at: number;
+  p: Vec3;
+  toe: number;
+  local?: boolean;
+}
+
+const plant = (at: number, p: Vec3, toe: number, local = false): FootMark => ({ at, p, toe, local });
+
+/** A step from a to b: the heel peels, the foot travels in a low arc and is over its spot before it lands. */
+const stride = (from: number, to: number, a: Vec3, b: Vec3, toeA: number, toeB: number, height = 0.1, local = false): FootMark[] =>
+  [0, 0.12, 0.3, 0.5, 0.7, 0.88, 1].map((s) => {
+    const go = s * s * (3 - 2 * s);
+    // The heel comes up a little before the foot leaves, and the toes reach down a little after.
+    const lift = s === 0 || s === 1 ? 0 : Math.max(0.045, height * Math.sin(Math.PI * s));
+    return {
+      at: from + (to - from) * s,
+      p: [a[0] + (b[0] - a[0]) * go, a[1] + (b[1] - a[1]) * go, lift],
+      toe: toeA + (toeB - toeA) * Math.min(1, go * 1.2),
+      local,
+    };
+  });
+
+const easeShare = (ease: Ease | undefined, u: number): number => {
+  if (ease === 'linear') return u;
+  if (ease === 'easeIn') return u * u * u;
+  if (ease === 'easeOut') return 1 - (1 - u) ** 3;
+  if (ease === 'hold') return 0;
+  return u * u * (3 - 2 * u);
+};
+
+/** Meters forward and up at a moment, along root keys that run linearly between each other. */
+const rootAt = (root: readonly RootKey[], t: number): [number, number] => {
+  let [at, forward, up] = [0, 0, 0];
+  for (const key of root) {
+    if (t < key.at) {
+      const share = (t - at) / Math.max(1e-6, key.at - at);
+      return [forward + (key.forward - forward) * share, up + ((key.up ?? 0) - up) * share];
+    }
+    [at, forward, up] = [key.at, key.forward, key.up ?? 0];
+  }
+  return [forward, up];
+};
+
+/** Where a foot is under the body at a moment. */
+const footAt = (path: readonly FootMark[], root: readonly RootKey[], t: number): [Vec3, number] => {
+  const under = (mark: FootMark): Vec3 => (mark.local ? mark.p : [mark.p[0], mark.p[1] - rootAt(root, t)[0], mark.p[2]]);
+  if (t <= path[0].at) return [under(path[0]), path[0].toe];
+  for (let i = 1; i < path.length; i += 1) {
+    if (t <= path[i].at) {
+      const [a, b] = [path[i - 1], path[i]];
+      const share = (t - a.at) / Math.max(1e-6, b.at - a.at);
+      return [mix(under(a), under(b), share) as Vec3, a.toe + (b.toe - a.toe) * share];
+    }
+  }
+  const last = path[path.length - 1];
+  return [under(last), last.toe];
+};
+
+const round = (t: number) => Math.round(t * 1e4) / 1e4;
+
+/**
+ * Samples a critical every `step` of its length: the body along its keys' own eases, and each foot along its
+ * ground path, under a root that moves linearly between its keys. The impact key keeps its flag.
+ */
+const bake = (body: AttackKey[], left: FootMark[], right: FootMark[], root: readonly RootKey[] = [], step = 0.01): AttackKey[] => {
+  const filled: AttackKey[] = [];
+  for (const key of body) {
+    const before = filled[filled.length - 1];
+    filled.push({ ...(before ?? {}), ...key, impact: key.impact });
+  }
+  const start = filled[0].at;
+  const times = new Set<number>(filled.map((key) => key.at));
+  for (const mark of [...left, ...right]) if (mark.at > start) times.add(round(mark.at));
+  for (let t = start; t < 1; t += step) times.add(round(t));
+  const keys: AttackKey[] = [];
+  for (const t of [...times].sort((p, q) => p - q)) {
+    const next = filled.findIndex((key) => key.at >= t);
+    const to = filled[next];
+    const from = filled[Math.max(0, next - 1)];
+    const share = to.at === t || next === 0 ? 1 : easeShare(to.ease, (t - from.at) / (to.at - from.at));
+    const key: AttackKey = { at: t, ease: next === 0 ? to.ease : 'linear' };
+    const record = key as unknown as Record<string, unknown>;
+    for (const [name, value] of Object.entries(to)) {
+      if (name === 'at' || name === 'ease' || name === 'impact' || value === undefined) continue;
+      const was = (from as unknown as Record<string, unknown>)[name];
+      record[name] = typeof value === 'boolean' || was === undefined ? value : mix(was, value, share);
+    }
+    if (to.impact && to.at === t) key.impact = true;
+    const [footL, toeL] = footAt(left, root, t);
+    const [footR, toeR] = footAt(right, root, t);
+    Object.assign(key, { footL, footR, toeL, toeR });
+    keys.push(key);
+  }
+  return keys;
+};
+
+/** A root path traced through points, linear between them, so that bake's planted feet stay put on the ground. */
+const rootPath = (points: Array<[number, number, number]>): RootKey[] =>
+  points.map(([at, forward, up]) => ({ at: round(at), forward, up, ease: 'linear' as const }));
+
+/** Samples a jump from one moment to the next as a fall under gravity: forward runs evenly, up rises and falls. */
+const arc = (from: number, to: number, forwardA: number, forwardB: number, height: number, upA = 0, upB = 0, samples = 6): Array<[number, number, number]> =>
+  Array.from({ length: samples }, (_, i) => {
+    const s = (i + 1) / samples;
+    return [from + (to - from) * s, forwardA + (forwardB - forwardA) * s, upA + (upB - upA) * s + 4 * height * s * (1 - s)];
+  });
+
+/*
+ * Both bows share one clock. Time runs a little fast through the grab and decelerates through the draw,
+ * so that full draw sinks into slow motion; the release happens at the slowest point (about a quarter
+ * speed) so the string hand's fly-back and the bow's roll play slowly, and the arrow's flight then
+ * accelerates hard into the impact. Body time 0.2 is real 0.11, 0.4 is 0.25, the release at 0.52 is 0.43,
+ * and the impact stays at 0.6.
+ */
+const BOW_WARP: SpeedKey[] = [
+  { at: 0, speed: 1.7 },
+  { at: 0.12, speed: 1.6 },
+  { at: 0.2, speed: 1.2 },
+  { at: 0.3, speed: 0.75 },
+  { at: 0.4, speed: 0.42 },
+  { at: 0.46, speed: 0.22 },
+  { at: 0.53, speed: 0.2 },
+  { at: 0.57, speed: 0.45 },
+  { at: 0.6, speed: 2.0 },
+  { at: 0.63, speed: 1.4 },
+  { at: 0.72, speed: 1.0 },
+  { at: 1, speed: 1.0 },
+];
+
+/*
+ * Longbow critical, the held shot. The back foot steps away into a deep side-on stance while the bow comes
+ * off the back and an arrow off the quiver. A huge draw from above, down past the jaw to the ear, the bow arm
+ * locked and the chest opening. Then slow motion: only a breath out and a last creep of the string. The
+ * release flings the string hand back past the ear and rolls the bow forward in the hand, and the archer
+ * holds that shape while the arrow flies, until time resumes and the bow comes down in one motion.
+ */
+const LONGBOW_STANCE_L: Vec3 = [-0.04, 0.2, 0];
+const LONGBOW_STANCE_R: Vec3 = [0.07, -0.42, 0];
+const LONGBOW_CRITICAL_KEYS: AttackKey[] = bake([
+  // Commit: the weight goes onto the front foot as the back one lifts, the free hand reaching for the quiver.
+  { at: 0.04, ease: 'easeIn', grip: [-0.3, -0.33, 0.24], head: [0.05, 0.95, 0.3], edge: [0.05, -0.3, 0.95],
+    draw: 0, nock: 0, hips: [0.0, 0.13, 0.03], hipTurn: 0.3, turn: 0.4, lean: 0.12, headFollow: 0,
+    freeHand: { position: [0.2, -0.12, -0.2], fingers: 0.5 } },
+  { at: 0.1, ease: 'linear', grip: [-0.28, -0.2, 0.38], head: [0.05, 0.97, 0.15], edge: [0.05, -0.15, 0.97],
+    nock: 0.02, hips: [0.02, 0.16, -0.04], hipTurn: 0.5, turn: 0.6, lean: 0.1,
+    freeHand: { position: [0.2, -0.15, -0.25], fingers: 0.9 } },
+  // Sunk deep into the stance, the arrow across to the string in front of the belt.
+  { at: 0.2, ease: 'easeOut', grip: [-0.18, 0.0, 0.52], head: [-0.08, 0.99, 0.04], edge: [0.03, 0, 1],
+    nock: 1, draw: 0.05, hips: [0.02, 0.2, -0.08], hipTurn: 0.85, turn: 1.0, lean: 0.06,
+    freeHand: { position: [-0.06, -0.08, 0.3], fingers: 0.8 } },
+  // The bow goes up high, and the draw starts from above it.
+  { at: 0.27, ease: 'linear', grip: [0.0, 0.38, 0.58], head: [-0.1, 0.98, -0.18], edge: [0, 0.18, 1],
+    draw: 0.3, hips: [0.02, 0.19, -0.08], hipTurn: 0.95, turn: 1.15, lean: 0.0 },
+  { at: 0.33, ease: 'linear', grip: [0.05, 0.42, 0.66], head: [-0.04, 0.98, -0.2], edge: [0, 0.2, 0.98],
+    draw: 0.7, hipTurn: 1.0, turn: 1.3, lean: -0.04 },
+  // Down onto the line: string past the jaw to the ear, bow arm locked, chest open, the top canted a touch.
+  { at: 0.4, ease: 'easeOut', grip: [0.07, 0.32, 0.75], head: [0.1, 0.98, -0.12], edge: [0, 0.12, 0.99],
+    draw: 1.02, hips: [0.02, 0.21, -0.07], hipTurn: 1.05, turn: 1.42, lean: -0.03 },
+  // Slow motion: a breath out, the string creeping, nothing else.
+  { at: 0.47, grip: [0.07, 0.315, 0.755], draw: 1.035, hips: [0.02, 0.215, -0.065], turn: 1.43, lean: -0.01 },
+  { at: 0.515, ease: 'linear', grip: [0.072, 0.318, 0.753], head: [0.11, 0.98, -0.12], draw: 1.045 },
+  // Release.
+  { at: 0.52, ease: 'linear', draw: 0, freeHand: { position: [0.12, 0.3, -0.28], fingers: 0.3 } },
+  // The string hand flies back past the ear, the bow arm kicks at the target and the bow rolls forward.
+  { at: 0.56, ease: 'easeOut', grip: [0.05, 0.32, 0.77], head: [0.12, 0.9, 0.42], edge: [0.02, -0.42, 0.9],
+    nock: 0, turn: 1.5, lean: 0.02, hips: [0.02, 0.2, -0.05],
+    freeHand: { position: [0.16, 0.33, -0.38], fingers: 0.25 } },
+  // The arrow lands. Held in the follow-through.
+  { at: 0.6, impact: true, grip: [0.05, 0.315, 0.765], head: [0.12, 0.88, 0.46], edge: [0.02, -0.46, 0.88],
+    freeHand: { position: [0.17, 0.32, -0.39], fingers: 0.25 } },
+  { at: 0.7, grip: [0.04, 0.3, 0.75], turn: 1.47, hips: [0.02, 0.19, -0.05],
+    freeHand: { position: [0.18, 0.28, -0.36], fingers: 0.35 } },
+  // Time resumes: the bow comes down in one motion while the feet step home.
+  { at: 0.8, ease: 'easeIn', grip: [-0.2, 0.05, 0.6], head: [0.05, 0.92, 0.38], edge: [0.05, -0.38, 0.92],
+    turn: 1.1, hipTurn: 0.85, hips: [0.02, 0.16, -0.04], lean: 0.06,
+    freeHand: { position: [0.22, -0.15, 0.0], fingers: 0.45 } },
+  { at: 0.9, ease: 'linear', grip: [-0.29, -0.25, 0.3], head: [0.05, 0.93, 0.3], edge: [0.05, -0.3, 0.93],
+    turn: 0.6, hipTurn: 0.42, hips: [0.01, 0.13, 0.0], lean: 0.08,
+    freeHand: { position: [0.22, -0.38, 0.1], fingers: 0.5 } },
+  { ...BOW_IDLE, at: 1, ease: 'easeOut' },
+], [
+  plant(0.04, [-0.13, 0.13, 0], 0.05),
+  plant(0.15, [-0.13, 0.13, 0], 0.05),
+  ...stride(0.15, 0.22, [-0.13, 0.13, 0], LONGBOW_STANCE_L, 0.05, -0.75, 0.08),
+  plant(0.79, LONGBOW_STANCE_L, -0.75),
+  ...stride(0.79, 0.88, LONGBOW_STANCE_L, [-0.13, 0.13, 0], -0.75, 0.05, 0.08),
+], [
+  plant(0.04, [0.15, -0.11, 0], 0.5),
+  ...stride(0.04, 0.15, [0.15, -0.11, 0], LONGBOW_STANCE_R, 0.5, 1.4, 0.1),
+  plant(0.87, LONGBOW_STANCE_R, 1.4),
+  ...stride(0.87, 0.98, LONGBOW_STANCE_R, [0.15, -0.11, 0], 1.4, 0.5, 0.1),
+]);
+
+const LONGBOW_CRITICAL: CriticalMoves = {
+  travel: 0,
+  timeWarp: BOW_WARP,
+  marks: { nock: 0.2, drawn: 0.4, slowmo: 0.4, release: 0.52, impact: 0.6, lower: 0.72 },
+  keys: LONGBOW_CRITICAL_KEYS,
+};
+
 export const LONGBOW: WeaponMoves = {
   idleClip: 'Idle_Loop',
   runClip: 'Sprint_Loop',
@@ -197,6 +406,7 @@ export const LONGBOW: WeaponMoves = {
   life: BOW_LIFE,
   stance: { idle: BOW_IDLE, walk: BOW_WALK, run: LONGBOW_RUN },
   attacks: [{ keys: LONGBOW_SHOT }],
+  critical: LONGBOW_CRITICAL,
 };
 
 /*
@@ -268,6 +478,95 @@ const SHORTBOW_SHOT: AttackKey[] = withSteps([
   { at: 0.905, footL: [-0.13, 0.13, 0], toeR: 0.5 },
 ]);
 
+/*
+ * Shortbow critical, the hop shot. A snap crouch, then a hop a meter backward and 0.4 up, nocking and
+ * drawing in the air, landing in a deep crouch at 0.3 that rises into a low canted full draw. The same
+ * slow-motion release as the longbow, flicked rather than heaved, then a side-on shuffle back to where it
+ * started while the bow comes down.
+ */
+const SHORTBOW_ROOT = rootPath([
+  [0.12, 0, 0],
+  ...arc(0.12, 0.3, 0, -1, 0.4),
+  [0.72, -1, 0],
+  [0.96, 0, 0],
+  [1, 0, 0],
+]);
+/* Where the feet land, on the ground. */
+const SHORTBOW_LAND_L: Vec3 = [-0.1, -0.68, 0];
+const SHORTBOW_LAND_R: Vec3 = [0.12, -1.16, 0];
+
+const SHORTBOW_CRITICAL_KEYS: AttackKey[] = bake([
+  // A snap crouch to load the hop, the free hand already at the quiver.
+  { at: 0.06, ease: 'easeIn', grip: [-0.3, -0.25, 0.3], head: [0.05, 0.85, 0.5], edge: [0.05, -0.5, 0.85],
+    draw: 0, nock: 0, hips: [0.01, 0.27, 0.04], hipTurn: 0.35, turn: 0.45, lean: 0.25, headFollow: 0,
+    freeHand: { position: [0.2, -0.17, -0.22], fingers: 0.6 } },
+  // Springs: the legs drive straight as the hand closes on an arrow.
+  { at: 0.12, ease: 'linear', grip: [-0.28, -0.12, 0.45], head: [0.05, 0.95, 0.25], edge: [0.05, -0.25, 0.95],
+    nock: 0.02, hips: [0.01, 0.07, 0.0], hipTurn: 0.5, turn: 0.6, lean: 0.15,
+    freeHand: { position: [0.2, -0.14, -0.25], fingers: 0.9 } },
+  // Tucked at the top of the hop, nocking.
+  { at: 0.2, ease: 'linear', grip: [-0.12, 0.05, 0.58], head: [0.18, 0.97, 0.06], edge: [-0.08, -0.02, 1],
+    nock: 1, hips: [0.01, 0.17, 0.0], hipTurn: 0.72, turn: 0.85, lean: 0.12,
+    freeHand: { position: [-0.05, 0.0, 0.3], fingers: 0.8 } },
+  // Drawing on the way down, the legs reaching for the ground.
+  { at: 0.27, ease: 'linear', grip: [0.05, 0.2, 0.72], head: [0.26, 0.96, 0.06], edge: [-0.03, -0.06, 1],
+    draw: 0.55, hips: [0.01, 0.13, 0.04], hipTurn: 0.82, turn: 1.0, lean: 0.14 },
+  { at: 0.3, ease: 'linear', draw: 0.72, hips: [0.01, 0.2, 0.06], grip: [0.06, 0.19, 0.73] },
+  // Absorbs the landing deep, still drawing.
+  { at: 0.34, ease: 'easeOut', draw: 0.9, hips: [0.01, 0.33, 0.08], grip: [0.07, 0.16, 0.74], lean: 0.24 },
+  // Rises into the shot: a low canted full draw, aimed up at the boss.
+  { at: 0.4, grip: [0.08, 0.22, 0.76], head: [0.26, 0.96, -0.06], edge: [-0.03, 0.08, 1],
+    draw: 1.05, hips: [0, 0.24, 0.1], lean: 0.2, turn: 1.04, hipTurn: 0.86 },
+  { at: 0.47, grip: [0.08, 0.215, 0.762], draw: 1.07, hips: [0, 0.25, 0.1], turn: 1.06 },
+  { at: 0.515, ease: 'linear', grip: [0.081, 0.218, 0.761], draw: 1.08 },
+  { at: 0.52, ease: 'linear', draw: 0, freeHand: { position: [0.13, 0.24, -0.26], fingers: 0.3 } },
+  { at: 0.56, ease: 'easeOut', grip: [0.06, 0.23, 0.8], head: [0.2, 0.95, 0.24], edge: [-0.1, -0.24, 0.96],
+    nock: 0, turn: 1.14, lean: 0.16, hips: [0, 0.23, 0.08],
+    freeHand: { position: [0.16, 0.27, -0.33], fingers: 0.25 } },
+  { at: 0.6, impact: true, grip: [0.055, 0.225, 0.795], head: [0.2, 0.94, 0.27], edge: [-0.1, -0.27, 0.95],
+    freeHand: { position: [0.17, 0.26, -0.34], fingers: 0.25 } },
+  { at: 0.68, grip: [0.04, 0.21, 0.78], hips: [0, 0.22, 0.07], turn: 1.1,
+    freeHand: { position: [0.18, 0.22, -0.3], fingers: 0.35 } },
+  // Shuffles back to the start, the bow coming down on the way.
+  { at: 0.78, ease: 'easeIn', grip: [-0.2, 0.02, 0.58], head: [0.08, 0.92, 0.3], edge: [0.02, -0.3, 0.95],
+    turn: 0.85, hipTurn: 0.65, lean: 0.17, hips: [0.005, 0.17, 0.0],
+    freeHand: { position: [0.2, -0.15, 0.08], fingers: 0.45 } },
+  { at: 0.9, ease: 'linear', grip: [-0.3, -0.27, 0.28], head: [0.05, 0.88, 0.46], edge: [0.05, -0.46, 0.88],
+    turn: 0.5, hipTurn: 0.34, lean: 0.15, hips: [0.01, 0.14, 0.02],
+    freeHand: { position: [0.23, -0.36, 0.13], fingers: 0.5 } },
+  { ...SHORTBOW_IDLE, at: 1, ease: 'easeOut' },
+], [
+  plant(0.06, [-0.13, 0.13, 0], 0.05),
+  plant(0.105, [-0.13, 0.13, 0], 0.05),
+  plant(0.12, [-0.13, 0.13, 0.07], -0.05, true),
+  plant(0.16, [-0.13, 0.18, 0.2], -0.2, true),
+  plant(0.22, [-0.12, 0.24, 0.3], -0.25, true),
+  plant(0.27, [-0.1, 0.3, 0.12], -0.3, true),
+  plant(0.3, SHORTBOW_LAND_L, -0.3),
+  plant(0.72, SHORTBOW_LAND_L, -0.3),
+  ...stride(0.72, 0.79, SHORTBOW_LAND_L, [-0.12, -0.25, 0], -0.3, -0.1, 0.08),
+  ...stride(0.84, 0.91, [-0.12, -0.25, 0], [-0.13, 0.13, 0], -0.1, 0.05, 0.08),
+], [
+  plant(0.06, [0.15, -0.11, 0], 0.5),
+  plant(0.1, [0.15, -0.11, 0], 0.5),
+  plant(0.12, [0.15, -0.11, 0.08], 0.6, true),
+  plant(0.16, [0.14, -0.1, 0.22], 0.75, true),
+  plant(0.22, [0.13, -0.12, 0.32], 0.85, true),
+  plant(0.27, [0.12, -0.15, 0.14], 0.9, true),
+  plant(0.3, SHORTBOW_LAND_R, 0.9),
+  plant(0.78, SHORTBOW_LAND_R, 0.9),
+  ...stride(0.78, 0.85, SHORTBOW_LAND_R, [0.14, -0.62, 0], 0.9, 0.7, 0.08),
+  ...stride(0.9, 0.97, [0.14, -0.62, 0], [0.15, -0.11, 0], 0.7, 0.5, 0.08),
+], SHORTBOW_ROOT);
+
+const SHORTBOW_CRITICAL: CriticalMoves = {
+  travel: 0,
+  rootPath: SHORTBOW_ROOT,
+  timeWarp: BOW_WARP,
+  marks: { takeoff: 0.12, land: 0.3, drawn: 0.4, slowmo: 0.4, release: 0.52, impact: 0.6, lower: 0.72 },
+  keys: SHORTBOW_CRITICAL_KEYS,
+};
+
 export const SHORTBOW: WeaponMoves = {
   idleClip: 'Idle_Loop',
   runClip: 'Sprint_Loop',
@@ -275,6 +574,7 @@ export const SHORTBOW: WeaponMoves = {
   life: BOW_LIFE,
   stance: { idle: SHORTBOW_IDLE, walk: SHORTBOW_WALK, run: BOW_RUN },
   attacks: [{ keys: SHORTBOW_SHOT }],
+  critical: SHORTBOW_CRITICAL,
 };
 
 /*
@@ -500,6 +800,136 @@ const SPEAR_HIGH: AttackKey[] = withSteps([
 
 const SPEAR_ATTACKS: Attack[] = [{ keys: SPEAR_THRUST }, { keys: SPEAR_HIGH }];
 
+/** A shaft pointing along `dir`, with the knuckles turned toward `hint` as far as they can be square to it. */
+const aimed = (grip: Vec3, hips: Vec3, dir: Vec3, hint?: Vec3) => {
+  if (!hint) return { grip, hips, head: dir, edge: underEdge(dir) };
+  const size = Math.hypot(dir[0], dir[1], dir[2]);
+  const [x, y, z] = [dir[0] / size, dir[1] / size, dir[2] / size];
+  const dot = hint[0] * x + hint[1] * y + hint[2] * z;
+  return { grip, hips, head: dir, edge: [hint[0] - dot * x, hint[1] - dot * y, hint[2] - dot * z] as Vec3 };
+};
+
+/*
+ * Spear critical, the vaulting plunge. The point goes up and the butt is stamped down beside the front foot,
+ * then one run-up step and a two-footed leap of 2.5 m that rises 1.2 m. On the way up the point comes over
+ * the top, so at the apex the spear is overhead in both hands, point down at the boss; time all but stops
+ * there. Then the plunge: the body drops out of the air driving the point down into the boss, lands in a
+ * deep crouch still pushing it in, wrenches it out and steps back into guard.
+ *
+ * The butt can't reach the ground: the right hand holds 0.33 m from it, so the stamp stops about 0.4 m short.
+ */
+const SPEAR_ROOT = rootPath([
+  [0.1, 0, 0],
+  [0.17, 0.2, 0],
+  [0.23, 0.42, 0],
+  [0.28, 0.6, 0],
+  // The rise slows into the apex.
+  ...Array.from({ length: 5 }, (_, i): [number, number, number] => {
+    const s = (i + 1) / 5;
+    return [0.28 + 0.14 * s, 0.6 + 0.6 * s, 1.2 * (1 - (1 - s) * (1 - s))];
+  }),
+  // Hangs, drifting on.
+  [0.475, 1.32, 1.19],
+  [0.53, 1.42, 1.15],
+  // And falls out of the air, faster and faster, onto the boss.
+  ...Array.from({ length: 4 }, (_, i): [number, number, number] => {
+    const s = (i + 1) / 4;
+    return [0.53 + 0.07 * s, 1.42 + 0.83 * s, 1.15 - 0.85 * s * s];
+  }),
+  [0.625, 2.4, 0.12],
+  [0.65, 2.5, 0],
+  [1, 2.5, 0],
+]);
+
+const SPEAR_CRITICAL_KEYS: AttackKey[] = bake([
+  // Commit: sinks back, and the rear hand drops so the point lifts.
+  { at: 0.06, ease: 'easeIn', ...aimed([0.24, -0.18, -0.1], [0.03, 0.2, -0.05], [-0.03, 0.42, 0.9]),
+    reach: -0.6, hipTurn: 0.7, turn: 0.92, lean: 0.12, headFollow: 0 },
+  // The stamp: the spear stood up, point to the sky, the butt driven down beside the front foot.
+  { at: 0.12, ...aimed([0.16, -0.3, 0.18], [0.02, 0.26, 0.06], [0.02, 0.95, 0.3]),
+    reach: -0.62, hipTurn: 0.45, turn: 0.55, lean: 0.22 },
+  // The run-up step, the point starting over the top.
+  { at: 0.17, ease: 'linear', ...aimed([0.15, -0.05, 0.12], [0.02, 0.2, 0.05], [0, 0.75, 0.66], [0.6, -0.3, 0.4]),
+    reach: -0.58, hipTurn: 0.3, turn: 0.4, lean: 0.18 },
+  // Gathers low for the leap, the shaft coming over level above the head.
+  { at: 0.23, ease: 'linear', ...aimed([0.13, 0.22, 0.0], [0.02, 0.3, 0.06], [0, 0.2, 0.98], [1, 0, 0]),
+    reach: -0.55, hipTurn: 0.2, turn: 0.3, lean: 0.3 },
+  // Takes off, the legs driving straight, both hands overhead with the point down.
+  { at: 0.28, ease: 'linear', ...aimed([0.12, 0.42, -0.08], [0.01, 0.06, 0.02], [0, -0.32, 0.95], [0.6, 0.6, 0.2]),
+    reach: -0.52, hipTurn: 0.18, turn: 0.28, lean: 0.05 },
+  // Rising into an arch, the spear cocked back above the head.
+  { at: 0.36, ease: 'easeOut', ...aimed([0.12, 0.52, -0.16], [0.01, 0.12, 0], [0, -0.55, 0.84], [0.5, 0.7, 0.4]),
+    turn: 0.25, lean: -0.08 },
+  // The apex, held in slow motion with a tremble in the arms.
+  { at: 0.42, ...aimed([0.12, 0.55, -0.2], [0.01, 0.14, 0], [0, -0.62, 0.78], [0.5, 0.7, 0.5]), lean: -0.13 },
+  { at: 0.48, ...aimed([0.125, 0.565, -0.22], [0.01, 0.145, -0.005], [0, -0.6, 0.8], [0.5, 0.7, 0.5]), lean: -0.15 },
+  { at: 0.53, ...aimed([0.12, 0.57, -0.24], [0.01, 0.15, -0.01], [0, -0.58, 0.81], [0.5, 0.7, 0.5]), lean: -0.16 },
+  // The plunge: the whole body folds over the shaft and drives the point down into the boss.
+  { at: 0.6, ease: 'easeIn', impact: true, ...aimed([0.1, 0.15, 0.3], [0, 0.2, 0.12], [0, -0.5, 0.87], [0.8, 0.4, 0.3]),
+    reach: -0.38, turn: 0.2, hipTurn: 0.12, lean: 0.42 },
+  // Lands in a deep crouch on the embedded spear, still pushing it in.
+  { at: 0.65, ease: 'easeOut', ...aimed([0.1, 0.27, 0.27], [0, 0.4, 0.08], [0, -0.5, 0.87], [1, 0, 0]),
+    reach: -0.4, lean: 0.5 },
+  { at: 0.71, ...aimed([0.1, 0.26, 0.28], [0, 0.42, 0.07], [0, -0.5, 0.87], [1, 0, 0]), lean: 0.52 },
+  // Wrenches it free: up and back out of the crouch, the shaft hauled back along its own line.
+  { at: 0.77, ease: 'easeIn', ...aimed([0.2, 0.05, -0.1], [0.02, 0.25, -0.05], [0, -0.25, 0.97], [0.7, -0.7, 0]),
+    reach: -0.6, turn: 0.6, hipTurn: 0.42, lean: 0.06 },
+  // Steps back into guard.
+  { at: 0.85, ease: 'easeOut', ...shaft([0.22, -0.15, -0.05], [0.03, 0.18, -0.02], [-0.04, 1.3]),
+    reach: -0.6, turn: 0.8, hipTurn: 0.6, lean: 0.12 },
+  { at: 0.92, ease: 'linear', ...shaft([0.21, -0.18, -0.01], [0.025, 0.14, 0.01], SPEAR_GUARD_LINE),
+    reach: -0.54, hipTurn: 0.62, turn: 0.82, lean: 0.18 },
+  { ...SPEAR_IDLE, at: 1, ease: 'easeOut' },
+], [
+  plant(0.06, SPEAR_FRONT_FOOT, -0.25),
+  plant(0.11, SPEAR_FRONT_FOOT, -0.25),
+  ...stride(0.11, 0.19, SPEAR_FRONT_FOOT, [-0.1, 0.85, 0], -0.25, -0.05, 0.1),
+  plant(0.265, [-0.1, 0.85, 0], -0.05),
+  plant(0.28, [-0.1, 0.85, 0.06], -0.05),
+  // In the air the knees tuck, then reach down for the landing.
+  plant(0.31, [-0.11, 0.2, 0.14], -0.1, true),
+  plant(0.37, [-0.12, 0.17, 0.38], -0.15, true),
+  plant(0.53, [-0.12, 0.2, 0.4], -0.15, true),
+  plant(0.59, [-0.12, 0.45, 0.14], -0.15, true),
+  plant(0.65, [-0.12, 0.5, 0], -0.15, true),
+  plant(0.78, [-0.12, 0.5, 0], -0.15, true),
+  ...stride(0.78, 0.87, [-0.12, 0.5, 0], SPEAR_FRONT_FOOT, -0.15, -0.25, 0.08, true),
+], [
+  plant(0.06, SPEAR_BACK_FOOT, 0.95),
+  plant(0.17, SPEAR_BACK_FOOT, 0.95),
+  ...stride(0.17, 0.255, SPEAR_BACK_FOOT, [0.16, 0.55, 0], 0.95, 0.25, 0.12),
+  plant(0.265, [0.16, 0.55, 0], 0.25),
+  plant(0.28, [0.16, 0.55, 0.06], 0.25),
+  plant(0.31, [0.15, -0.05, 0.16], 0.3, true),
+  plant(0.37, [0.15, -0.18, 0.42], 0.35, true),
+  plant(0.53, [0.15, -0.2, 0.44], 0.35, true),
+  plant(0.59, [0.15, -0.08, 0.18], 0.4, true),
+  plant(0.65, [0.15, -0.12, 0], 0.45, true),
+  plant(0.85, [0.15, -0.12, 0], 0.45, true),
+  ...stride(0.85, 0.93, [0.15, -0.12, 0], SPEAR_BACK_FOOT, 0.45, 0.95, 0.08, true),
+], SPEAR_ROOT);
+
+const SPEAR_CRITICAL: CriticalMoves = {
+  travel: 2.5,
+  rootPath: SPEAR_ROOT,
+  // Normal speed into the leap, slowing to a fifth at the apex, then the fall is fast and the impact faster.
+  timeWarp: [
+    { at: 0, speed: 1.5 },
+    { at: 0.2, speed: 1.5 },
+    { at: 0.28, speed: 0.9 },
+    { at: 0.33, speed: 0.35 },
+    { at: 0.45, speed: 0.22 },
+    { at: 0.5, speed: 0.3 },
+    { at: 0.55, speed: 0.9 },
+    { at: 0.6, speed: 2.6 },
+    { at: 0.63, speed: 1.4 },
+    { at: 0.7, speed: 1.0 },
+    { at: 1, speed: 1.0 },
+  ],
+  marks: { stamp: 0.12, takeoff: 0.28, apex: 0.45, fall: 0.53, plunge: 0.6, land: 0.65, wrench: 0.77 },
+  keys: SPEAR_CRITICAL_KEYS,
+};
+
 export const SPEAR: WeaponMoves = {
   idleClip: 'Idle_Loop',
   runClip: 'Sprint_Loop',
@@ -508,4 +938,5 @@ export const SPEAR: WeaponMoves = {
   life: { runSteady: 0.85, sink: 0.015, shift: 0.012 },
   stance: { idle: SPEAR_IDLE, walk: SPEAR_WALK, run: SPEAR_RUN },
   attacks: SPEAR_ATTACKS,
+  critical: SPEAR_CRITICAL,
 };

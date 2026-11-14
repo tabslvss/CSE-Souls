@@ -1,0 +1,131 @@
+/*
+ * The world map on a controller. The map draws its own reticle on its canvas; this file gives the
+ * map a highlight of its own while it holds the controller, and the name plate beside the reticle.
+ * Everything applies only while a controller is in use (html.pad-active, set by ui/padNav.ts).
+ */
+
+.world-map:focus {
+  outline: none;
+}
+
+/* Keeps the name plate's stacking inside the map, so a screen opened over the map covers it. */
+.world-map {
+  isolation: isolate;
+}
+
+/* The map is too big for the shared glow and scale-up, so it lights its own frame instead. */
+html.pad-active .world-map:focus {
+  box-shadow: none;
+  scale: none;
+}
+
+.world-map::after {
+  content: '';
+  position: absolute;
+  inset: 9px;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow:
+    inset 0 0 0 1px rgba(236, 213, 155, 0.6),
+    inset 0 0 34px rgba(236, 200, 120, 0.2);
+  transition: opacity 0.2s ease;
+}
+
+html.pad-active .world-map:focus::after {
+  opacity: 1;
+  animation: map-pad-breathe 2.4s ease-in-out infinite;
+}
+
+html.pad-active .world-map:focus .world-map__frame {
+  filter: brightness(1.18) drop-shadow(0 0 8px rgba(236, 200, 120, 0.45));
+}
+
+@keyframes map-pad-breathe {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------- The name plate beside the reticle ---------- */
+
+.world-map__plaque {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  display: grid;
+  gap: 3px;
+  min-width: 150px;
+  max-width: 260px;
+  padding: 8px 14px 9px 12px;
+  border-left: 2px solid var(--gold);
+  background: linear-gradient(90deg, rgba(14, 10, 6, 0.95) 0%, rgba(14, 10, 6, 0.86) 70%, rgba(14, 10, 6, 0.7) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(201, 164, 92, 0.28),
+    0 4px 18px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  /* Held off until the map has placed it, so it never shows a frame in the corner. */
+  visibility: hidden;
+  translate: 0 -50%;
+  animation: map-pad-plaque-in 0.18s var(--pad-ease, ease-out);
+}
+
+.world-map__plaque--placed {
+  visibility: visible;
+}
+
+.world-map__plaque--left {
+  border-right: 2px solid var(--gold);
+  border-left: 0;
+  padding: 8px 12px 9px 14px;
+  text-align: right;
+  translate: -100% -50%;
+}
+
+.world-map__plaque-name {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  color: var(--gold-pale);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.world-map__plaque-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  font-variant: small-caps;
+  letter-spacing: 0.12em;
+  color: var(--gold-bright);
+}
+
+.world-map__plaque--left .world-map__plaque-action {
+  justify-content: flex-end;
+}
+
+.world-map__plaque-action .input-glyph {
+  width: 22px;
+  height: 22px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+}
+
+@keyframes map-pad-plaque-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.pad-active .world-map:focus::after,
+  .world-map__plaque {
+    animation: none;
+  }
+}

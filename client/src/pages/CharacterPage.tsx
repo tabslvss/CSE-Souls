@@ -6,6 +6,15 @@ import { CharacterSheet } from '../components/CharacterSheet';
 import { announceAchievement } from '../components/toast';
 import { useSession } from '../session';
 import { sound } from '../sound';
+import { PadHints, type PadHint } from '../ui/PadHints';
+
+const HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'confirm', label: 'Select' },
+  { button: 'y', label: 'Change picture' },
+  { button: 'scroll', label: 'Scroll' },
+  { button: 'back', label: 'Back' },
+];
 
 export function CharacterPage() {
   const { setAvatar } = useSession();
@@ -57,10 +66,10 @@ export function CharacterPage() {
         player={player}
         portraitActions={
           <div className="portrait-actions">
-            <Link className="btn btn--primary btn--small" to="/create">
+            <Link className="btn btn--primary btn--small" to="/create" data-pad-default>
               {player.classId ? 'Edit Character' : 'Create Character'}
             </Link>
-            <button type="button" className="btn btn--small" disabled={busy} onClick={() => setPickerOpen(true)}>
+            <button type="button" className="btn btn--small" data-pad-y disabled={busy} onClick={() => setPickerOpen(true)}>
               Change Picture
             </button>
             {player.avatarUrl && (
@@ -72,6 +81,7 @@ export function CharacterPage() {
           </div>
         }
       />
+      <PadHints hints={HINTS} />
       {pickerOpen && <AvatarPicker onDone={onAvatarChanged} onClose={() => setPickerOpen(false)} />}
     </div>
   );

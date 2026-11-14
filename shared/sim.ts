@@ -5,7 +5,7 @@
  */
 import type { Stats } from './classes.js';
 import { collide } from './collision.js';
-import type { WeaponStats } from './combat.js';
+import { CRITICAL_IMPACT_TIME, type WeaponStats } from './combat.js';
 
 export const TICK_RATE = 30;
 export const TICK_DT = 1 / TICK_RATE;
@@ -16,6 +16,8 @@ export const PLAYER_RADIUS = 0.45;
 const RUN_MULTIPLIER = 1.75;
 const DODGE_SPEED = 9;
 export const DODGE_SECONDS = 0.5;
+/** Seconds of a roll, from its start, in which nothing hurts. The last 0.1 s of the roll is open. */
+export const DODGE_INVULNERABLE_SECONDS = 0.4;
 const DODGE_COST = 20;
 /** How long a drink lasts. The health arrives part way through, so a hit before then loses it. */
 export const DRINK_SECONDS = 1.4;
@@ -29,6 +31,8 @@ const JUMP_COST = 15;
 const JUMP_HEIGHT = 0.85;
 export const STAGGER_SECONDS = 0.35;
 const KNOCKBACK_SPEED = 5;
+/** A critical's forward travel is applied in steps this long, each one pushed out of whatever it hits. */
+const CRITICAL_TRAVEL_STEP = 0.4;
 export const STARTING_POTIONS = 3;
 export const MAX_POTIONS = 5;
 const DEFAULT_ATTACK = { attackSeconds: 0.75, hitAt: 0.5, attackCost: 14, usesMagic: false, attackMoveMultiplier: 0.2 };
@@ -79,6 +83,12 @@ export interface SimState {
   jumpTime: number;
   /** The id of the Binary Grace this player is sitting at, or 0. Only the server sits a player down. */
   resting: number;
+  /**
+   * Above 0 during a critical hit, counting down from CRITICAL_SECONDS. Only the server starts one (it sets this,
+   * yaw toward the boss, and clears attackTime, dodgeTime, drinkTime and staggerTime); the browser just receives it.
+   * While above 0 the player ignores input, can't be hit, and keeps its yaw. criticalTravel is applied at 0.
+   */
+  criticalTime: number;
 }
 
 export interface Derived {
@@ -96,6 +106,8 @@ export interface Derived {
   attackCost: number;
   usesMagic: boolean;
   attackMoveMultiplier: number;
+  /** Meters moved forward when a critical ends (WeaponStats.criticalTravel). */
+  criticalTravel: number;
 }
 
 /** weapon is left out only where attacks don't matter, like tests of plain movement. */
@@ -107,12 +119,15 @@ export function deriveStats(stats: Stats, weapon?: WeaponStats): Derived {
     maxMagic: 40 + stats.arcane * 4,
     staminaRegen: REGEN_PER_SECOND + 0.3 * (stats.stamina - 10),
     magicRegen: 3 + 0.2 * stats.arcane,
-    dodgeInvulnerable: 0.22 + 0.004 * stats.dexterity,
+    // Like an Elden Ring roll: safe from the first frame for about 13 animation frames at 30 fps, the same for
+    // every build, then a short open tail as the roll ends. Stats change nothing here.
+    dodgeInvulnerable: DODGE_INVULNERABLE_SECONDS,
     attackSeconds: (weapon?.attackSeconds ?? DEFAULT_ATTACK.attackSeconds) / (1 + 0.01 * (stats.speed - 10)),
     hitAt: weapon?.hitAt ?? DEFAULT_ATTACK.hitAt,
     attackCost: weapon?.cost ?? DEFAULT_ATTACK.attackCost,
     usesMagic: weapon?.usesMagic ?? DEFAULT_ATTACK.usesMagic,
     attackMoveMultiplier: weapon?.attackMoveMultiplier ?? DEFAULT_ATTACK.attackMoveMultiplier,
+    criticalTravel: weapon?.criticalTravel ?? 0,
   };
 }
 
@@ -139,6 +154,7 @@ export function createState(x: number, z: number, derived: Derived): SimState {
     drinkTime: 0,
     jumpTime: 0,
     resting: 0,
+    criticalTime: 0,
   };
 }
 
@@ -155,6 +171,25 @@ export function stepPlayer(state: SimState, input: SimInput, derived: Derived, d
   if (state.deadTime > 0) {
     state.moving = 0;
     state.drinkTime = 0;
+    return;
+  }
+
+  // A critical plays out on its own. Its forward travel lands in one go at the end, where the animation
+  // drops its root offset, so prediction and the server move the player on the same step.
+  if (state.criticalTime > 0) {
+    state.criticalTime = Math.max(0, state.criticalTime - dt);
+    state.moving = 0;
+    if (state.criticalTime === 0 && derived.criticalTravel > 0) {
+      // In short steps, so a long dash stops at a tree or rock instead of jumping through it.
+      const steps = Math.ceil(derived.criticalTravel / CRITICAL_TRAVEL_STEP);
+      const stepX = (Math.sin(state.yaw) * derived.criticalTravel) / steps;
+      const stepZ = (Math.cos(state.yaw) * derived.criticalTravel) / steps;
+      for (let i = 0; i < steps; i++) {
+        state.x += stepX;
+        state.z += stepZ;
+        collide(state, PLAYER_RADIUS);
+      }
+    }
     return;
   }
 
@@ -251,15 +286,20 @@ export function stepPlayer(state: SimState, input: SimInput, derived: Derived, d
   collide(state, PLAYER_RADIUS);
 }
 
+/** True for the step in which a critical reaches its impact. before is criticalTime before the step. */
+export function criticalImpactThisStep(before: number, after: number): boolean {
+  return before > CRITICAL_IMPACT_TIME && after <= CRITICAL_IMPACT_TIME;
+}
+
 /** True for the step in which an attack reaches its hit moment. before is attackTime before the step. */
 export function attackHitThisStep(before: number, after: number, derived: Derived): boolean {
   const moment = derived.attackSeconds * (1 - derived.hitAt);
   return before > moment && after <= moment;
 }
 
-/** True during the part of a dodge that can't be hit. */
+/** True during the part of a dodge that can't be hit, and through a whole critical. */
 export function isInvulnerable(state: SimState, derived: Derived): boolean {
-  return state.deadTime > 0 || (state.dodgeTime > 0 && state.dodgeTime > DODGE_SECONDS - derived.dodgeInvulnerable);
+  return state.deadTime > 0 || state.criticalTime > 0 || (state.dodgeTime > 0 && state.dodgeTime > DODGE_SECONDS - derived.dodgeInvulnerable);
 }
 
 /** How high to draw a player, in meters, from jumpTime. Only for the picture. */
@@ -269,12 +309,14 @@ export function jumpHeight(jumpTime: number): number {
   return JUMP_HEIGHT * 4 * through * (1 - through);
 }
 
-export type AnimationId = 'idle' | 'walk' | 'run' | 'dodge' | 'attack' | 'hit' | 'death' | 'drink' | 'jump' | 'rest';
+export type AnimationId = 'idle' | 'walk' | 'run' | 'dodge' | 'attack' | 'hit' | 'death' | 'drink' | 'jump' | 'rest' | 'critical';
 
 export function animationFor(
-  state: Pick<SimState, 'dodgeTime' | 'attackTime' | 'moving' | 'deadTime' | 'staggerTime' | 'drinkTime' | 'jumpTime' | 'resting'>,
+  // criticalTime is optional so frames that don't carry it yet still type-check; they just never show 'critical'.
+  state: Pick<SimState, 'dodgeTime' | 'attackTime' | 'moving' | 'deadTime' | 'staggerTime' | 'drinkTime' | 'jumpTime' | 'resting'> & { criticalTime?: number },
 ): AnimationId {
   if (state.deadTime > 0) return 'death';
+  if ((state.criticalTime ?? 0) > 0) return 'critical';
   if (state.staggerTime > 0) return 'hit';
   if (state.resting > 0) return 'rest';
   if (state.dodgeTime > 0) return 'dodge';

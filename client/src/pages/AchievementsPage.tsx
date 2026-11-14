@@ -4,6 +4,13 @@ import { api, type Achievement } from '../api';
 import { AchievementGlyph } from '../components/AchievementGlyph';
 import { Panel, SectionHeading } from '../components/Ornaments';
 import { useSession } from '../session';
+import { PadHints, type PadHint } from '../ui/PadHints';
+
+const HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'scroll', label: 'Scroll' },
+  { button: 'back', label: 'Back' },
+];
 
 export function AchievementsPage() {
   const { user, loading } = useSession();
@@ -33,8 +40,13 @@ export function AchievementsPage() {
       </SectionHeading>
       {error && <p className="form__error center" role="alert">{error}</p>}
       <ul className="deeds">
-        {achievements?.map((item) => (
-          <li key={item.id}>
+        {achievements?.map((item, index) => (
+          // Each achievement is a stop for the controller's highlight, so the list can be read one by one.
+          <li
+            key={item.id}
+            data-pad-item
+            data-pad-default={index === 0 || undefined}
+          >
             <Panel className="deed">
               <div data-unlocked={!!item.unlockedAt} className="deed__inner">
                 <AchievementGlyph id={item.id} unlocked={!!item.unlockedAt} />
@@ -58,6 +70,7 @@ export function AchievementsPage() {
           </li>
         ))}
       </ul>
+      <PadHints hints={HINTS} />
     </div>
   );
 }

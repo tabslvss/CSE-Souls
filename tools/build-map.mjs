@@ -91,7 +91,11 @@ const TRAILS = [
   [3, 122, 40, 118, 78, 112, 98, 92, 104, 48],
   // Hamlet lanes.
   [-1, 50, -18, 46],
+  // From the spawn's west side to the bull's ring, ending at its east entrance.
+  [-6, 175, -24, 173, -46, 168, -70, 166, -94, 163, -112, 161, -127, 160],
 ];
+/** The great bull's ring, at the west end of the meadow. Nothing grows or rises inside it. */
+const ARENA = { x: -150, z: 160, radius: 24 };
 
 function distToLine(line, x, z) {
   let best = Infinity;
@@ -275,6 +279,8 @@ const CAMPS = [
   // Black Aurochs: just past the edge of the clearing, a fight the player can see coming.
   { kind: 'bull', x: 168, z: 26, count: 1, radius: 5 },
   { kind: 'bull', x: 128, z: -14, count: 1, radius: 5 },
+  // The great bull, alone in its ring west of the spawn.
+  { kind: 'bull_boss', x: ARENA.x, z: ARENA.z, count: 1, radius: 2 },
 ];
 GRACES.forEach((g) => reserve(g.x, g.z, 4));
 CHESTS.forEach((c) => reserve(c.x, c.z, 3));
@@ -352,64 +358,404 @@ function meadow(random) {
     }
   }
   // A lone roadside gatehouse ruin as a landmark.
-  roundTower(-150, 168, 1.5, 1, { roof: false });
   castle('tower_round', 143, 176, 1.2, 1.3);
   circle(143, 176, 5);
   castle('wall_arch_broken', 132, 171, 0.3, 1.5);
   castle('wall_ruin', 155, 177, -0.2, 1.3);
   rect(155, 177, 3.9, 0.35, -0.2);
-  reserve(-150, 168, 9);
   reserve(143, 176, 16);
 
-  // Boulders the grass grows around.
-  let placed = 0;
-  for (let tries = 0; tries < 400 && placed < 34; tries += 1) {
-    const x = -210 + random() * 420;
-    const z = 114 + random() * 92;
-    if (distToRoad(x, z) < 8 || distToTrail(x, z) < 5 || isReserved(x, z, 4) || hitsCollider(x, z, 4)) continue;
+  bullArena(random);
+  meadowHills(random);
+  groves(random);
+}
+
+/* ---------- The great bull's ring ---------- */
+
+function bullArena(random) {
+  const { x: cx, z: cz } = ARENA;
+  reserve(cx, cz, ARENA.radius + 2);
+  // Standing stones and broken columns, with a gap facing east, toward the spawn, for the way in.
+  const ring = 27;
+  const count = 13;
+  const gapHalf = 4.6 / ring;
+  for (let i = 0; i < count; i += 1) {
+    const a = gapHalf + (i / (count - 1)) * (Math.PI * 2 - gapHalf * 2);
+    const x = cx + Math.cos(a) * ring;
+    const z = cz + Math.sin(a) * ring;
+    if (i % 3 === 1) {
+      pillar('pillar_round', x, z, 1.45, 0.42);
+    } else if (i % 3 === 2) {
+      pillar('pillar_stump', x, z, 1.4, 0.42);
+      castle('rubble_small', x + Math.cos(a) * 1.6, z + Math.sin(a) * 1.6, a * 2, 0.9);
+    } else {
+      const scale = 1.15 + random() * 0.4;
+      forest('rock_spire', x, z, a * 3, scale, { y: -1.2 * scale });
+      circle(x, z, 0.95 * scale);
+    }
+    reserve(x, z, 2.5);
+  }
+  // Two fires mark the entrance from the trail.
+  for (const side of [-1, 1]) {
+    const x = cx + Math.cos(side * 0.24) * 30;
+    const z = cz + Math.sin(side * 0.24) * 30;
+    props('brazier_unlit', x, z, 0, 1.25);
+    circle(x, z, 0.4);
+    fire(x, 2.0, z, 0.75);
+    reserve(x, z, 2);
+  }
+  // Old bones near the edge of the ring, so it reads as a place where things died.
+  for (let i = 0; i < 7; i += 1) {
+    const a = random() * Math.PI * 2;
+    const r = 17 + random() * 6;
+    props('skull', cx + Math.cos(a) * r, cz + Math.sin(a) * r, random() * 6.28, 1 + random() * 0.3);
+  }
+}
+
+/* ---------- Hills ---------- */
+
+// The simulation is flat, so a hill is scenery that players walk around: its collider covers the
+// part too steep to stand on. world.ts draws the same shape from MAP.hills.
+const hills = [];
+const HILL_SINK = 0.3;
+
+/**
+ * Height above the ground of a hill's surface at a point in its own frame, where u and v are 1 at the
+ * edge of its base. world.ts uses this same formula, so the props put on hilltops sit on them.
+ */
+function hillSurface(index, height, steep, u, v) {
+  const r2 = u * u + v * v;
+  if (r2 >= 1) return -HILL_SINK;
+  const r = Math.sqrt(r2);
+  const angle = Math.atan2(v, u);
+  const rock = smooth(0.9, 1.6, steep);
+  const bump = (0.08 * Math.sin(angle * 3 + index * 1.7) + 0.05 * Math.sin(angle * 5 + index * 2.9 + r * 3)) * (1 + rock) * r;
+  return (height + HILL_SINK) * Math.pow(1 - r2, 1.5 - 0.7 * rock) * (1 + bump) - HILL_SINK;
+}
+
+/** A point in a hill's own frame, where u runs along its length, in world x and z. */
+function hillPoint(index, u, v) {
+  const [x, z, rx, rz, , yaw] = hills.slice(index * 6, index * 6 + 6);
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  return { x: x + u * rx * cos + v * rz * sin, z: z - u * rx * sin + v * rz * cos };
+}
+function hillHeightAt(index, u, v) {
+  const [, , rx, rz, height] = hills.slice(index * 6, index * 6 + 6);
+  return hillSurface(index, height, height / Math.min(rx, rz), u, v);
+}
+
+function addHill(x, z, rx, rz, height, yaw, solid = true) {
+  const index = hills.length / 6;
+  hills.push(round(x), round(z), round(rx), round(rz), round(height), round(yaw, 1000));
+  if (!solid) return index;
+  // A little inside where the slope meets the ground, so players can brush its foot.
+  if (rx / rz > 1.45) rect(x, z, rx * 0.66, rz * 0.62, yaw);
+  else circle(x, z, Math.min(rx, rz) * 0.78);
+  reserve(x, z, Math.max(rx, rz) * 0.85);
+  return index;
+}
+
+/** Height, quantized so that props on hills share a few batches instead of one each. */
+const onHill = (index, u, v, sink) => Math.round((hillHeightAt(index, u, v) - sink) * 10) / 10;
+
+function dressHill(random, index, kind) {
+  const [, , , , height] = hills.slice(index * 6, index * 6 + 6);
+  if (kind === 'outcrop') {
+    const scale = 0.7 + random() * 0.5;
+    const { x, z } = hillPoint(index, 0.05, -0.05);
+    forest(random() > 0.5 ? 'boulder_c' : 'boulder_a', x, z, random() * 6.28, scale, { y: onHill(index, 0.05, -0.05, 0.6 * scale) });
+    if (random() > 0.4) {
+      const at = hillPoint(index, -0.4, 0.3);
+      forest('rock_spire', at.x, at.z, random() * 6.28, 0.8, { y: onHill(index, -0.4, 0.3, 1.2) });
+    }
+  } else if (random() < (kind === 'ridge' ? 0.7 : 0.45)) {
+    // Trees along the crest of a ridge, or one or two on a knoll.
+    const trees = kind === 'ridge' ? 2 + Math.floor(random() * 3) : 1 + Math.floor(random() * 2);
+    for (let i = 0; i < trees; i += 1) {
+      const u = kind === 'ridge' ? -0.55 + (i + random() * 0.6) * (1.1 / trees) : (random() - 0.5) * 0.5;
+      const v = (random() - 0.5) * 0.3;
+      const { x, z } = hillPoint(index, u, v);
+      forest(pickGroveTree(random)[0], x, z, random() * 6.28, 0.85 + random() * 0.4, { y: onHill(index, u, v, 0.15) });
+    }
+  }
+  // Grass over the top and down the sides.
+  const tufts = Math.round(6 + Math.min(height, 6) * 2);
+  for (let i = 0; i < tufts; i += 1) {
+    const a = random() * Math.PI * 2;
+    const r = Math.sqrt(random()) * 0.82;
+    const u = Math.cos(a) * r;
+    const v = Math.sin(a) * r;
+    const { x, z } = hillPoint(index, u, v);
     const roll = random();
-    const node = roll < 0.4 ? 'boulder_a' : roll < 0.7 ? 'boulder_b' : 'rock_slab';
-    const radius = { boulder_a: 1.5, boulder_b: 1.3, rock_slab: 0.95 }[node];
-    const scale = 0.7 + random() * 0.7;
+    const node = kind === 'outcrop' && roll < 0.3 ? 'rock_small' : roll < 0.55 ? 'grass_tall' : roll < 0.85 ? 'grass_short' : 'fern_psx';
+    forest(node, x, z, random() * 6.28, 0.9 + random() * 0.7, { y: onHill(index, u, v, 0.08) });
+  }
+}
+
+function meadowHills(random) {
+  const size = (kind) => {
+    if (kind === 'knoll') {
+      const rx = 2 + random() * 3;
+      return [rx, rx * (0.8 + random() * 0.35), 1.5 + random() * 1.5];
+    }
+    if (kind === 'ridge') {
+      const rz = 4 + random() * 2;
+      return [6 + random() * 6.5, rz, Math.min(9, Math.max(4, rz * (1 + random() * 0.5)))];
+    }
+    const rx = 2.6 + random() * 2;
+    return [rx, rx * (0.75 + random() * 0.25), rx * (1.4 + random() * 0.35)];
+  };
+  // Every check here keeps a hill off the paths, out of the ring and the shrine, and apart from walls.
+  const fits = (x, z, rx, rz) => {
+    const reach = Math.max(rx, rz);
+    if (x - reach < -244 || x + reach > 244 || z - reach < 114.5 || z + reach > 216) return false;
+    if (distToRoad(x, z) < reach + 7 || distToTrail(x, z) < reach + 3) return false;
+    if (Math.hypot(x - SPAWN.x, z - 180) < reach + 20) return false;
+    if (Math.hypot(x - ARENA.x, z - ARENA.z) < reach + 28.5) return false;
+    if (isReserved(x, z, reach * 0.6 + 1) || hitsCollider(x, z, reach * 0.8 + 2.2)) return false;
+    return true;
+  };
+  const place = (kind, spot, yawOf) => {
+    for (let tries = 0; tries < 60; tries += 1) {
+      const [x, z] = spot();
+      const [rx, rz, height] = size(kind);
+      if (!fits(x, z, rx, rz)) continue;
+      dressHill(random, addHill(x, z, rx, rz, height, yawOf ? yawOf(x, z) : random() * Math.PI), kind);
+      return true;
+    }
+    return false;
+  };
+  let count = 0;
+  // A bowl around the bull's ring: ridges along it, open to the east.
+  for (let i = 0; i < 10; i += 1) {
+    const a = Math.PI * 0.27 + (i / 9) * Math.PI * 1.46 + (random() - 0.5) * 0.2;
+    const kind = i % 3 === 1 ? 'knoll' : 'ridge';
+    const spot = () => {
+      const r = 35 + random() * 12;
+      return [ARENA.x + Math.cos(a) * r, ARENA.z + Math.sin(a) * r];
+    };
+    // Lying along the ring, so it walls the bowl in.
+    if (place(kind, spot, (x, z) => -Math.atan2(z - ARENA.z, x - ARENA.x) - Math.PI / 2)) count += 1;
+  }
+  // Knolls around the shrine, and one rocky outcrop.
+  for (let i = 0; i < 9; i += 1) {
+    const spot = () => {
+      const a = random() * Math.PI * 2;
+      const r = 26 + random() * 26;
+      return [Math.cos(a) * r, 180 + Math.sin(a) * r];
+    };
+    if (place(i === 4 ? 'outcrop' : 'knoll', spot)) count += 1;
+  }
+  // Along the meadow's north and south edges.
+  for (let i = 0; i < 12; i += 1) {
+    const north = i % 2 === 0;
+    const spot = () => [-225 + random() * 450, north ? 120 + random() * 8 : 199 + random() * 9];
+    if (place(i % 3 === 0 ? 'ridge' : 'knoll', spot, (x, z) => (random() - 0.5) * 0.6)) count += 1;
+  }
+  // Beside the road, low enough to keep the view of the citadel.
+  for (let i = 0; i < 6; i += 1) {
+    const spot = () => {
+      const z = 116 + random() * 50;
+      return [(i % 2 ? 1 : -1) * (14 + random() * 10), z];
+    };
+    if (place('knoll', spot)) count += 1;
+  }
+  // Steep rocky outcrops out in the open.
+  for (let i = 0; i < 5; i += 1) {
+    if (place('outcrop', () => [-220 + random() * 440, 122 + random() * 82])) count += 1;
+  }
+  console.log(`hills with colliders: ${count}`);
+
+  // Past the map's edges, with no colliders, so that the horizon rolls instead of stopping.
+  for (const [x, z, rx, rz, height, yaw] of [
+    [-150, 252, 70, 34, 26, 0.15],
+    [10, 262, 90, 40, 32, -0.08],
+    [170, 250, 64, 34, 24, 0.35],
+    [-262, 170, 34, 70, 26, 0.1],
+    [-268, 60, 30, 60, 22, -0.2],
+    [264, 176, 34, 68, 28, -0.1],
+    [270, 70, 30, 56, 22, 0.2],
+    [-248, 236, 50, 40, 28, 0.6],
+    [250, 238, 48, 38, 26, -0.5],
+  ]) {
+    addHill(x, z, rx, rz, height, yaw, false);
+  }
+}
+
+/* ---------- Groves around the spawn and copses in the meadow ---------- */
+
+function groves(random) {
+  const clump = (x, z) => 0.5 + 0.5 * Math.sin(x * 0.083 + Math.sin(z * 0.061) * 2.2) * Math.sin(z * 0.072 - x * 0.023 + 1.3);
+  const copses = [];
+  for (let tries = 0; tries < 300 && copses.length < 16; tries += 1) {
+    const x = -215 + random() * 430;
+    const z = 118 + random() * 36;
+    const r = 6 + random() * 6;
+    if (distToRoad(x, z) < r + 9 || Math.hypot(x - ARENA.x, z - ARENA.z) < r + 30) continue;
+    if (copses.some((c) => Math.hypot(c.x - x, c.z - z) < c.r + r + 12)) continue;
+    copses.push({ x, z, r });
+  }
+  const herds = CAMPS.filter((camp) => camp.z > 112 && camp.kind !== 'bull_boss');
+  const density = (x, z) => {
+    const shrine = Math.hypot(x - SPAWN.x, z - 180);
+    if (shrine < 18) return 0;
+    // The view north up the road to the citadel stays open.
+    if (z < 182 && distToRoad(x, z) < 10) return 0;
+    // The herds need open grass to wander in.
+    if (herds.some((camp) => Math.hypot(x - camp.x, z - camp.z) < 8)) return 0;
+    const ring = 0.7 * (1 - smooth(24, 36, shrine));
+    const sides = smooth(120, 230, Math.abs(x)) * (z > 150 ? 0.9 : 0.6);
+    const south = smooth(192, 207, z) * 0.8;
+    const rest = z > 155 ? smooth(40, 140, Math.abs(x)) * 0.25 : 0.03;
+    let copse = 0;
+    for (const c of copses) copse = Math.max(copse, 0.95 * (1 - smooth(c.r * 0.35, c.r, Math.hypot(x - c.x, z - c.z))));
+    const fromRing = Math.hypot(x - ARENA.x, z - ARENA.z);
+    const ahead = x > ARENA.x && Math.abs(z - ARENA.z) < (x - ARENA.x) * 0.7;
+    const bowl = fromRing > 30 && !ahead ? 0.85 * (1 - smooth(40, 50, fromRing)) : 0;
+    return Math.min(1, Math.max(ring, sides, south, rest, copse, bowl) * (0.2 + 0.8 * clump(x, z)));
+  };
+  const points = poisson(random, -238, 238, 113.5, 209.5, 4.6, 5200, (x, z) => {
+    if (random() >= density(x, z)) return false;
+    return distToRoad(x, z) > 5 && distToTrail(x, z) > 3.4 && !isReserved(x, z, 1.6) && !hitsCollider(x, z, 1.9);
+  });
+  const trees = [];
+  for (const { x, z } of points) {
+    const [node, radius] = pickGroveTree(random);
+    // The pine is the smallest tree, so it grows taller here to make a full canopy.
+    const scale = node === 'tree_pine_c' ? 1.15 + random() * 0.55 : 0.85 + random() * 0.4;
     forest(node, x, z, random() * 6.28, scale);
     circle(x, z, radius * scale);
-    placed += 1;
+    trees.push({ x, z, trunk: radius * scale });
   }
-  // A few bare trees, so the meadow has a skyline.
-  placed = 0;
-  for (let tries = 0; tries < 300 && placed < 26; tries += 1) {
-    const x = -225 + random() * 450;
-    const z = 114 + random() * 90;
-    if (Math.abs(x) < 16 || distToRoad(x, z) < 10 || distToTrail(x, z) < 5 || isReserved(x, z, 4) || hitsCollider(x, z, 3)) continue;
-    const roll = random();
-    const node = roll < 0.45 ? 'tree_gnarled_a' : roll < 0.75 ? 'tree_snag' : roll < 0.9 ? 'tree_gnarled_b' : 'tree_gnarled_c';
-    const scale = 0.85 + random() * 0.5;
-    forest(node, x, z, random() * 6.28, scale);
-    circle(x, z, { tree_gnarled_a: 0.5, tree_gnarled_b: 0.55, tree_snag: 0.22, tree_gnarled_c: 0.62 }[node] * scale);
-    placed += 1;
+  // A fringe past the south edge, where nobody can walk, so the wood doesn't just stop.
+  for (const { x, z } of poisson(random, -238, 238, 211, 216, 6.5, 500, (x, z) => random() < density(x, 205))) {
+    forest(pickGroveTree(random)[0], x, z, random() * 6.28, 0.9 + random() * 0.4);
   }
-  // Grass: thick in the meadow, thinner in the moors.
-  for (let i = 0; i < 4300; i += 1) {
-    const inMeadow = i < 2800;
+  console.log(`spawn and meadow trees with colliders: ${trees.length}`);
+
+  // Small plants never land on the paths, in the shrine's clearing, in the ring or on anything kept open.
+  const open = (x, z, roadPad = 3.2) =>
+    x > -239 && x < 239 && z > 113 && z < 209.5 &&
+    distToRoad(x, z) > roadPad && distToTrail(x, z) > 1.8 && Math.hypot(x - SPAWN.x, z - 180) > 16 && !isReserved(x, z, 0);
+  let plants = 0;
+  const plant = (node, x, z, min, max) => {
+    if (!open(x, z)) return;
+    forest(node, x, z, random() * 6.28, min + random() * (max - min));
+    plants += 1;
+  };
+  /** A loose drift around a point, thick in the middle and thinning out. */
+  const drift = (node, cx, cz, count, spread, min, max, inner = 0) => {
+    for (let i = 0; i < count; i += 1) {
+      const a = random() * Math.PI * 2;
+      const r = inner + spread * Math.pow(random(), 0.8);
+      plant(node, cx + Math.cos(a) * r, cz + Math.sin(a) * r, min, max);
+    }
+  };
+  for (const tree of trees) {
+    if (random() < 0.55) drift('fern_psx', tree.x, tree.z, 2 + Math.floor(random() * 5), 3.5, 0.9, 1.7, tree.trunk + 0.3);
+    if (random() < 0.22) drift('fern_a', tree.x, tree.z, 1 + Math.floor(random() * 2), 2.5, 0.8, 1.3, tree.trunk + 0.4);
+    // Leafy undergrowth fills the wood at eye height, where the pines' crowns are above the view.
+    if (random() < 0.45) drift('bush_a', tree.x, tree.z, 1 + Math.floor(random() * 2), 2.5, 0.8, 1.5, tree.trunk + 1.6);
+    // Mushrooms at the foot of the trunk.
+    if (random() < 0.3) drift('mushroom_a', tree.x, tree.z, 1 + Math.floor(random() * 3), 0.45, 0.9, 1.6, tree.trunk + 0.12);
+  }
+  // Grass in drifts across the open meadow, with a thinner even cover between them.
+  for (let i = 0; i < 110; i += 1) {
+    const x = -230 + random() * 460;
+    const z = 114 + random() * 94;
+    const tall = random() < 0.45;
+    drift(tall ? 'grass_tall' : 'grass_short', x, z, 8 + Math.floor(random() * 11), 3 + random() * 4, 0.9, 1.7);
+    if (random() < 0.3) drift('grass_wispy', x, z, 3, 3, 0.9, 1.4);
+  }
+  for (let i = 0; i < 2600; i += 1) {
+    const inMeadow = i < 1700;
     const x = inMeadow ? -92 + random() * 184 : -236 + random() * 472;
     const z = inMeadow ? 113 + random() * 46 : 113 + random() * 96;
-    if (distToRoad(x, z) < 3.2 || distToLine([0, 195, 0, 150], x, z) < 3 || Math.hypot(x, z - 175) < 12) continue;
+    if (random() > 0.4 + 0.6 * clump(x * 1.7, z * 1.7)) continue;
     const roll = random();
-    const node = roll < 0.4 ? 'grass_tall' : roll < 0.95 ? 'grass_short' : 'grass_wispy';
-    forest(node, x, z, random() * 6.28, 0.9 + random() * 0.9);
+    plant(roll < 0.35 ? 'grass_tall' : roll < 0.95 ? 'grass_short' : 'grass_wispy', x, z, 0.9, 1.8);
   }
-  for (let i = 0; i < 220; i += 1) {
-    const x = -220 + random() * 440;
-    const z = 113 + random() * 92;
-    if (distToRoad(x, z) < 3.5) continue;
-    forest('rock_small', x, z, random() * 6.28, 0.7 + random() * 1.6);
+  for (let i = 0; i < 180; i += 1) plant('rock_small', -230 + random() * 460, 114 + random() * 94, 0.7, 1.6);
+  // The plaza's rim: grass, ferns and reeds grow in from the meadow, thick at the edge and thinning
+  // toward the paving. The fire's circle and the walk north to the arch stay clear.
+  let rim = 0;
+  for (let i = 0; i < 1400; i += 1) {
+    const a = random() * Math.PI * 2;
+    const r = 8 + 13 * Math.pow(random(), 0.75);
+    const x = SPAWN.x + Math.cos(a) * r;
+    const z = 179 + Math.sin(a) * r;
+    if (random() > 0.25 + 0.75 * smooth(8, 14, r)) continue;
+    if (Math.hypot(x - SPAWN.x, z - SPAWN.z) < 7.5 || (z < SPAWN.z && Math.abs(x) < 3.5)) continue;
+    if (distToRoad(x, z) < 2.5 || distToTrail(x, z) < 1.2 || hitsCollider(x, z, 0.25)) continue;
+    const roll = random();
+    const node = roll < 0.38 ? 'grass_short' : roll < 0.6 ? 'grass_tall' : roll < 0.72 ? 'grass_wispy' : roll < 0.88 ? 'fern_psx' : roll < 0.95 ? 'bush_tall' : 'fern_a';
+    forest(node, x, z, random() * 6.28, node === 'fern_a' ? 0.7 + random() * 0.4 : 0.8 + random() * 0.8);
+    rim += 1;
   }
+  console.log(`plants around the shrine plaza: ${rim}`);
+  // A little trampled grass at the edge of the bull's ring.
   for (let i = 0; i < 90; i += 1) {
-    const x = -220 + random() * 440;
-    const z = 113 + random() * 92;
-    if (distToRoad(x, z) < 4 || Math.hypot(x, z - 175) < 12) continue;
-    forest('fern_psx', x, z, random() * 6.28, 0.8 + random() * 0.8);
+    const a = random() * Math.PI * 2;
+    const r = 15 + random() * 9;
+    forest('grass_short', ARENA.x + Math.cos(a) * r, ARENA.z + Math.sin(a) * r, random() * 6.28, 0.7 + random() * 0.5);
   }
+  console.log(`spawn and meadow small plants: ${plants}`);
+
+  // Solid things near the groves: mossy boulders, fallen logs, stumps, and a few standing stones.
+  const nearTree = (pad, from, to) => {
+    const tree = trees[Math.floor(random() * trees.length)];
+    const a = random() * Math.PI * 2;
+    const r = from + random() * (to - from);
+    const x = tree.x + Math.cos(a) * r;
+    const z = tree.z + Math.sin(a) * r;
+    if (!open(x, z, 8) || distToTrail(x, z) < 4 || isReserved(x, z, pad + 1) || hitsCollider(x, z, pad + 1.3)) return null;
+    return { x, z };
+  };
+  const solid = (count, make) => {
+    for (let tries = 0, placed = 0; tries < count * 12 && placed < count; tries += 1) if (make()) placed += 1;
+  };
+  solid(34, () => {
+    const roll = random();
+    const node = roll < 0.35 ? 'boulder_a' : roll < 0.65 ? 'boulder_b' : roll < 0.8 ? 'boulder_c' : 'rock_slab';
+    const scale = 0.6 + random() * 0.7;
+    const radius = { boulder_a: 1.55, boulder_b: 1.3, boulder_c: 2.1, rock_slab: 0.95 }[node] * scale;
+    const at = nearTree(radius, 2.5, 7);
+    if (!at) return false;
+    forest(node, at.x, at.z, random() * 6.28, scale);
+    circle(at.x, at.z, radius);
+    return true;
+  });
+  solid(14, () => {
+    const scale = 1.5 + random() * 1.1;
+    const node = random() > 0.5 ? 'log_a' : 'log_b';
+    const half = (node === 'log_a' ? 0.95 : 0.89) * scale;
+    const at = nearTree(half, 3, 7);
+    if (!at) return false;
+    const yaw = random() * 6.28;
+    forest(node, at.x, at.z, yaw, scale);
+    rect(at.x, at.z, half, 0.32 * scale, yaw);
+    return true;
+  });
+  solid(18, () => {
+    const node = random() > 0.5 ? 'stump_a' : 'stump_c';
+    const scale = 0.9 + random() * 0.7;
+    const radius = (node === 'stump_a' ? 0.4 : 0.48) * scale;
+    const at = nearTree(radius, 2.5, 6);
+    if (!at) return false;
+    forest(node, at.x, at.z, random() * 6.28, scale);
+    circle(at.x, at.z, radius);
+    return true;
+  });
+  solid(7, () => {
+    const x = -225 + random() * 450;
+    const z = 120 + random() * 85;
+    const scale = 0.9 + random() * 0.6;
+    if (!open(x, z, 9) || distToTrail(x, z) < 5 || isReserved(x, z, 3) || hitsCollider(x, z, 3)) return false;
+    forest('rock_spire', x, z, random() * 6.28, scale, { y: -1.2 * scale });
+    circle(x, z, 0.95 * scale);
+    return true;
+  });
 }
 
 /* ---------- Forsaken Village: only a burnt hamlet for now ---------- */
@@ -581,6 +927,24 @@ const TREES = [
   ['tree_snag', 0.22, 10],
 ];
 const TREE_WEIGHT = TREES.reduce((sum, tree) => sum + tree[2], 0);
+// The groves by the spawn are living wood. Of the trees that passed the art review (tools/check-map.ts)
+// only the pine is in leaf, so it leads, and the bare gnarled trees and snags are an accent.
+const GROVE_TREES = [
+  ['tree_pine_c', 0.27, 72],
+  ['tree_gnarled_a', 0.5, 11],
+  ['tree_gnarled_b', 0.52, 7],
+  ['tree_gnarled_c', 0.62, 6],
+  ['tree_snag', 0.22, 3],
+];
+const GROVE_WEIGHT = GROVE_TREES.reduce((sum, tree) => sum + tree[2], 0);
+function pickGroveTree(random) {
+  let roll = random() * GROVE_WEIGHT;
+  for (const tree of GROVE_TREES) {
+    roll -= tree[2];
+    if (roll <= 0) return tree;
+  }
+  return GROVE_TREES[0];
+}
 function pickTree(random) {
   let roll = random() * TREE_WEIGHT;
   for (const tree of TREES) {
@@ -1076,6 +1440,7 @@ const MAP = {
   trails: TRAILS,
   fires,
   spires,
+  hills,
   props: [...batches.values()],
 };
 
@@ -1106,6 +1471,7 @@ ${lines(MAP.zones)}
   trails: ${JSON.stringify(MAP.trails)},
   fires: ${JSON.stringify(MAP.fires)},
   spires: ${JSON.stringify(MAP.spires)},
+  hills: ${JSON.stringify(MAP.hills)},
   props: [
 ${lines(MAP.props)}
   ],
@@ -1113,4 +1479,4 @@ ${lines(MAP.props)}
 `;
 writeFileSync(OUT, text);
 const instances = MAP.props.reduce((sum, batch) => sum + batch.items.length / 4, 0);
-console.log(`wrote ${OUT}: ${(text.length / 1024).toFixed(0)} KB, ${colliders.length} colliders, ${instances} props in ${MAP.props.length} batches, ${fires.length / 4} fires`);
+console.log(`wrote ${OUT}: ${(text.length / 1024).toFixed(0)} KB, ${colliders.length} colliders, ${instances} props in ${MAP.props.length} batches, ${fires.length / 4} fires, ${hills.length / 6} hills`);

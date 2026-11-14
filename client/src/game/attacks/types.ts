@@ -116,6 +116,53 @@ export interface Attack {
   keys?: AttackKey[];
 }
 
+/** Critical length and impact share; shared/combat.ts is the one source so server and animation agree. */
+export { CRITICAL_SECONDS, CRITICAL_IMPACT_AT } from '../../../../shared/combat';
+
+/** Where the whole character is, on top of the keys: for dashes and leaps. */
+export interface RootKey {
+  /** When, as a share of the critical, in the same (warped) time as the keys. */
+  at: number;
+  /** Meters moved along the facing direction, from where the critical started. */
+  forward: number;
+  /** Meters off the ground. The last key must come back to 0. */
+  up?: number;
+  ease?: Ease;
+}
+
+/** A point on the critical's playback speed curve. */
+export interface SpeedKey {
+  /** When, as a share of the critical's real length. */
+  at: number;
+  /** How fast the body moves here: 1 is normal, 0.15 is heavy slow motion. */
+  speed: number;
+}
+
+/**
+ * The finishing blow on a stunned boss: one long sequence, with the boss about 6 m tall and 4 m in front.
+ * The keys are an attack's keys, played over CRITICAL_SECONDS on the neutral body, and the impact key goes
+ * at CRITICAL_IMPACT_AT. Keys start from the idle stance and, after the last key, head back to it.
+ */
+export interface CriticalMoves {
+  keys: AttackKey[];
+  /** Meters the character ends up moved along its facing. 0 for most; a dash through the target goes past it. */
+  travel: number;
+  /** The whole character's path. Linear speed curve between keys, from [0, 0] at 0; the last key should be at `travel` and 0 up. Left out with a travel, it eases from 0.2 to the impact. */
+  rootPath?: RootKey[];
+  /**
+   * A playback speed curve, linear between keys, for slow motion. Each half (before and after the impact) is
+   * scaled to keep its length, so the impact still lands at CRITICAL_IMPACT_AT of real time, and the end at 1.
+   * Key times (`at` in keys, rootPath and marks) are in this warped body time; speed keys are in real time.
+   * Without a warp the two are the same. CRITICAL_IMPACT_AT and 1 are the same moment in both.
+   */
+  timeWarp?: SpeedKey[];
+  /**
+   * Named moments that the effects read, such as sheath, release, slam or burst, in body time like the keys.
+   * CharacterModel.criticalMarks() hands them out in real time, to compare with criticalPhase().
+   */
+  marks?: Record<string, number>;
+}
+
 /** Small movements on top of a stance, so that someone standing or walking looks alive. Lengths are in meters. */
 export interface StanceLife {
   /** How far the pelvis sinks and rises while standing, on a loop of about 3 seconds. */
@@ -175,6 +222,8 @@ export interface WeaponMoves {
   roll?: RollPose;
   /** Attacks take turns through this list. Each one should start where the one before it ended. */
   attacks: Attack[];
+  /** The critical on a stunned boss. Without one, the first attack is stretched to its length, its impact moved to CRITICAL_IMPACT_AT. */
+  critical?: CriticalMoves;
 }
 
 export type AxisName = '+x' | '-x' | '+y' | '-y' | '+z' | '-z';

@@ -85,4 +85,9 @@ export interface MapData {
   fires?: number[];
   /** Slate tower roofs: x, y, z, radius, height, repeating. */
   spires?: number[];
+  /**
+   * Hills to draw: x, z, radiusX, radiusZ, height, yaw, repeating. Walkable ground stays flat, so each
+   * one inside the map also has a collider over its steep part. Ones outside the map are only horizon.
+   */
+  hills?: number[];
 }

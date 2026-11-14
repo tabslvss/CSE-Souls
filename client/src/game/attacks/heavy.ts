@@ -1,4 +1,4 @@
-import type { AttackKey, Pose, Vec3, WeaponMoves } from './types';
+import type { AttackKey, CriticalMoves, Pose, Vec3, WeaponMoves } from './types';
 
 /*
  * Heavy weapons: both hands low on a very long haft, swung with the whole body. The weapon is the heavy
@@ -316,12 +316,76 @@ const HAMMER_HAYMAKER: AttackKey[] = [
   { ...HAMMER_IDLE, at: 1, ease: 'linear' },
 ];
 
+
+/** A weapon direction with its face square to an overhead swing. */
+const aim = (head: Vec3): Pick<Pose, 'head' | 'edge'> => ({ head, edge: pitched(head) });
+
+/**
+ * Both criticals share the legs: a breath, the front foot stepping out wide, a rise onto the toes under the held
+ * weapon, a stamp far forward on the slam, a bow over the buried head, then the front foot stepping home.
+ */
+const CRIT_PLANT: Vec3 = [-0.26, 0.44, 0];
+const CRIT_TOES: Vec3 = [-0.26, 0.44, 0.07];
+const CRIT_STAMP: Vec3 = [-0.22, 0.8, 0];
+
+/** The hold at the top, about 0.42 s: the arms tremble under the weight and the chest breathes, then one last rise. */
+const heldHigh = (grip: Vec3, head: Vec3, lean: number, dx: number): AttackKey[] => [
+  { at: 0.45, grip: [grip[0] + dx, grip[1] - 0.006, grip[2] + 0.008], ...aim([head[0] + dx, head[1], head[2] - 0.012]), lean: lean + 0.012 },
+  { at: 0.49, grip: [grip[0] - dx, grip[1] + 0.006, grip[2] - 0.006], ...aim([head[0] - dx, head[1], head[2] + 0.012]), lean: lean - 0.015 },
+  { at: 0.52, grip: [grip[0] + dx * 0.6, grip[1], grip[2] + 0.004], ...aim([head[0] + dx * 0.5, head[1], head[2] - 0.006]), lean },
+  // The last little rise, everything drawn up as high as it will go, before the fold.
+  { at: 0.55, ease: 'easeOut', grip: [grip[0], grip[1] + 0.03, grip[2] - 0.02], ...aim([head[0], head[1], head[2] - 0.05]), lean: lean - 0.05, hips: [0.01, 0.085, -0.01] },
+];
+
+/**
+ * The hammer critical: the hammer is swung back past the right hip and up behind into a vertical hold at full
+ * stretch overhead, held there trembling, then the whole body folds and drives it straight down into the floor at
+ * the boss's feet. It stays buried while the body bows over it, and is hauled out in two heaves.
+ */
+const HAMMER_CRITICAL: CriticalMoves = {
+  travel: 0,
+  marks: { breath: 0.07, plant: 0.2, peak: 0.4, slam: 0.6, buried: 0.625, free: 0.81 },
+  keys: [
+    // Gather: a deep breath in, the chest lifting off the hammer, the head still on the floor.
+    { at: 0.07, grip: [0.1, -0.17, 0.38], ...aim([-0.12, -0.25, 0.96]), turn: 0.36, lean: 0.22, hipTurn: 0.26, hipTilt: 0.02, hips: [0.03, 0.12, 0] },
+    // The front foot steps out wide while the head is dragged across the floor to the right.
+    { at: 0.13, ease: 'linear', grip: [0.16, -0.18, 0.36], ...aim([0.1, -0.22, 0.97]), turn: 0.5, lean: 0.3, hipTurn: 0.34, hips: [0.04, 0.2, 0.02], footL: [-0.22, 0.3, 0.17] },
+    // Planted wide, knees loaded, the hammer starting its swing back past the right side.
+    { at: 0.2, grip: [0.3, -0.2, 0.26], ...aim([0.6, -0.18, 0.78]), turn: 0.75, lean: 0.34, hipTurn: 0.42, hipRoll: 0.04, hips: [0.06, 0.32, 0.02], footL: CRIT_PLANT, toeL: 0.15 },
+    // Hoist: the backswing, the head low behind the right hip and the shoulders wound round after it.
+    { at: 0.26, ease: 'linear', grip: [0.36, -0.16, 0.12], ...aim([0.72, -0.16, -0.67]), turn: 0.95, lean: 0.28, hipTurn: 0.5, hips: [0.08, 0.3, -0.04] },
+    // Up behind: the hands climb the right side and the body starts to rise and open.
+    { at: 0.32, ease: 'linear', grip: [0.3, 0.2, 0], ...aim([0.42, 0.55, -0.72]), turn: 0.7, lean: 0, hipTurn: 0.36, hipTilt: -0.04, hipRoll: 0, hips: [0.05, 0.18, -0.02], footL: [-0.26, 0.44, 0.03], ...pivot(0.55, 0.03) },
+    { at: 0.37, ease: 'linear', grip: [0.12, 0.48, 0.02], ...aim([0.12, 0.97, -0.22]), turn: 0.25, lean: -0.16, hipTurn: 0.14, hipTilt: -0.08, hips: [0.02, 0.08, 0], footL: [-0.26, 0.44, 0.05], ...pivot(0.45, 0.06) },
+    // Peak: standing straight up at full stretch, on the toes, back arched.
+    { at: 0.4, ease: 'easeOut', grip: [0.04, 0.58, 0.04], ...aim([0.03, 1, -0.06]), turn: 0.08, lean: -0.24, hipTurn: 0.04, hipTilt: -0.1, hips: [0.01, 0.095, 0], footL: CRIT_TOES, ...pivot(0.4, 0.08) },
+    ...heldHigh([0.04, 0.58, 0.04], [0.03, 1, -0.06], -0.24, 0.012),
+    // The fold: hips drop and go forward first, the front foot lifting for the stamp, the hammer still high.
+    { at: 0.575, ease: 'easeIn', grip: [0.03, 0.32, 0.38], ...aim([0, 0.62, 0.79]), turn: 0.02, lean: 0.3, hipTilt: 0.14, hips: [0, 0.2, 0.2], footL: [-0.24, 0.6, 0.17], ...pivot(0.35, 0.06) },
+    // SLAM: the stamp, the back foot driving, the chest over the front knee, the head flat on the floor 3 m out.
+    { at: 0.6, ease: 'linear', impact: true, grip: [0, -0.32, 0.52], ...aim([0, -0.17, 0.985]), turn: 0, lean: 0.96, hipTurn: -0.06, hipTilt: 0.34, hips: [0, 0.42, 0.48], footL: CRIT_STAMP, toeL: 0.1, ...pivot(0.3, 0.08) },
+    // Momentum bows the body further over the buried head.
+    { at: 0.625, ease: 'easeOut', grip: [0, -0.35, 0.5], ...aim([0, -0.2, 0.98]), lean: 1.06, hips: [0, 0.48, 0.5] },
+    { at: 0.68, grip: [0.005, -0.345, 0.5], ...aim([0, -0.2, 0.98]), lean: 1.04, hips: [0, 0.47, 0.5] },
+    // First heave: the body straightens against the haft but the head stays stuck.
+    { at: 0.74, grip: [0.02, -0.33, 0.47], ...aim([0, -0.24, 0.97]), lean: 0.86, hipTilt: 0.26, hips: [0, 0.42, 0.44], ...pivot(0.3, 0.05) },
+    { at: 0.77, grip: [0.03, -0.32, 0.46], ...aim([0, -0.23, 0.97]), lean: 0.84, hips: [0, 0.41, 0.43] },
+    // Second heave: it tears free and comes up off the floor.
+    { at: 0.81, ease: 'easeOut', grip: [0.06, -0.24, 0.44], ...aim([-0.04, 0.02, 1]), turn: 0.1, lean: 0.6, hipTurn: 0.04, hipTilt: 0.18, hips: [0.01, 0.32, 0.3], ...pivot(0.4, 0.03) },
+    // The slow stand: the weight lets the head back down and the front foot steps home.
+    { at: 0.89, grip: [0.08, -0.22, 0.4], ...aim([-0.1, -0.18, 0.98]), turn: 0.3, lean: 0.45, hipTurn: 0.18, hipTilt: 0.1, hips: [0.02, 0.26, 0.14], footL: [-0.18, 0.42, 0.16], toeL: 0.08, ...pivot(0.55, 0) },
+    { at: 0.95, grip: [0.1, -0.2, 0.38], ...aim([-0.12, -0.25, 0.96]), turn: 0.4, lean: 0.36, hipTurn: 0.28, hipTilt: 0.07, hips: [0.03, 0.22, 0.03], footL: [-0.16, 0.2, 0.05] },
+    { ...HAMMER_IDLE, at: 1 },
+  ],
+};
+
 export const WAR_HAMMER: WeaponMoves = {
   idleClip: 'Idle_Loop',
   runClip: 'Jog_Fwd_Loop',
   life: { sink: 0.03, shift: 0.05, drift: 0.09, resettle: 0.025 },
   stance: { idle: HAMMER_IDLE, walk: HAMMER_WALK, run: HAMMER_RUN },
   attacks: [{ keys: HAMMER_SLAM }, { keys: HAMMER_HAYMAKER }],
+  critical: HAMMER_CRITICAL,
 };
 
 /** The double axe rides on the shoulder, ready to come off it into a sweep. */
@@ -540,10 +604,51 @@ const AXE_CHOP: AttackKey[] = [
   { ...AXE_GUARD_POSE, at: 1 },
 ];
 
+
+/**
+ * The axe critical: off the shoulder into a low coil behind the right side, then hoisted high over the right
+ * shoulder at a slant and held there trembling, before it comes down on the diagonal from up on the right and
+ * buries itself at a tilt, blade leaning left, at the boss's feet. Wrenched out with a twist and rolled back onto the shoulder.
+ */
+const AXE_CRITICAL: CriticalMoves = {
+  travel: 0,
+  marks: { breath: 0.07, plant: 0.2, peak: 0.4, slam: 0.6, buried: 0.625, free: 0.8 },
+  keys: [
+    // Gather: a breath in, the axe settling deeper on the shoulder.
+    { at: 0.07, grip: [0.19, 0.1, 0.22], ...aim([0.42, 0.48, -0.77]), turn: 0.32, lean: 0.04, hips: [0.02, 0.08, 0] },
+    // Off the shoulder, the front foot stepping out wide.
+    { at: 0.13, ease: 'linear', grip: [0.22, 0, 0.24], ...aim([0.55, 0.3, -0.78]), turn: 0.55, lean: 0.18, hipTurn: 0.32, hips: [0.04, 0.18, 0.02], footL: [-0.22, 0.3, 0.17] },
+    // Planted wide, knees loaded, the head dipped low behind the right side.
+    { at: 0.2, grip: [0.3, -0.06, 0.18], ...aim([0.75, 0.05, -0.66]), turn: 0.85, lean: 0.28, hipTurn: 0.45, hipRoll: 0.05, hips: [0.06, 0.3, 0], footL: CRIT_PLANT, toeL: 0.15 },
+    // Hoist: up the right side on a slant, the body rising and opening.
+    { at: 0.28, ease: 'linear', grip: [0.32, 0.22, 0.08], ...aim([0.68, 0.48, -0.55]), turn: 0.75, lean: 0.05, hipTurn: 0.38, hipRoll: 0, hips: [0.05, 0.2, -0.02], footL: [-0.26, 0.44, 0.03], ...pivot(0.55, 0.03) },
+    { at: 0.35, ease: 'linear', grip: [0.3, 0.42, 0.06], ...aim([0.55, 0.75, -0.36]), turn: 0.55, lean: -0.12, hipTurn: 0.3, hipTilt: -0.06, hips: [0.04, 0.1, 0], footL: [-0.26, 0.44, 0.05], ...pivot(0.45, 0.06) },
+    // Peak: high over the right shoulder, slanted out to the right, on the toes and arched.
+    { at: 0.4, ease: 'easeOut', grip: [0.28, 0.52, 0.08], ...aim([0.5, 0.82, -0.28]), turn: 0.5, lean: -0.2, hipTurn: 0.26, hipTilt: -0.08, hips: [0.03, 0.095, 0], footL: CRIT_TOES, ...pivot(0.4, 0.08) },
+    ...heldHigh([0.28, 0.52, 0.08], [0.5, 0.82, -0.28], -0.2, 0.012),
+    // The fold: hips drop and turn through first, the front foot lifting for the stamp, the blade still high on the right.
+    { at: 0.575, ease: 'easeIn', grip: [0.16, 0.3, 0.4], ...aim([0.3, 0.66, 0.69]), turn: 0.2, lean: 0.3, hipTurn: 0.04, hipTilt: 0.14, hips: [0.01, 0.2, 0.2], footL: [-0.24, 0.6, 0.17], ...pivot(0.35, 0.06) },
+    // SLAM: down across the body, the blade biting the floor at a tilt, a little left of centre.
+    { at: 0.6, ease: 'linear', impact: true, grip: [0.02, -0.3, 0.54], ...aim([-0.3, -0.19, 0.935]), turn: -0.16, lean: 0.95, hipTurn: -0.28, hipTilt: 0.32, hipRoll: -0.05, hips: [-0.04, 0.42, 0.48], footL: CRIT_STAMP, toeL: 0.25, ...pivot(0.25, 0.08) },
+    { at: 0.625, ease: 'easeOut', grip: [-0.01, -0.33, 0.52], ...aim([-0.32, -0.22, 0.92]), turn: -0.2, lean: 1.04, hips: [-0.05, 0.47, 0.5] },
+    { at: 0.68, grip: [-0.005, -0.325, 0.52], ...aim([-0.32, -0.22, 0.92]), lean: 1.02, hips: [-0.05, 0.46, 0.5] },
+    // First heave: the body straightens against the haft, the blade stuck fast.
+    { at: 0.74, grip: [0, -0.31, 0.5], ...aim([-0.3, -0.26, 0.92]), lean: 0.86, hipTilt: 0.26, hips: [-0.04, 0.42, 0.44], ...pivot(0.25, 0.05) },
+    { at: 0.77, grip: [0.005, -0.3, 0.5], ...aim([-0.3, -0.25, 0.92]), lean: 0.84, hips: [-0.04, 0.41, 0.43] },
+    // Second heave: wrenched out with a twist toward the middle.
+    { at: 0.8, ease: 'easeOut', grip: [0.04, -0.2, 0.46], ...aim([-0.2, 0.1, 0.97]), turn: -0.05, lean: 0.58, hipTurn: -0.1, hipTilt: 0.18, hipRoll: 0, hips: [0, 0.32, 0.3], ...pivot(0.35, 0.03) },
+    // Hauled up in front as the front foot steps home, then rolled back over onto the shoulder.
+    { at: 0.87, grip: [0.08, -0.06, 0.4], ...aim([0.1, 0.45, 0.89]), turn: 0.15, lean: 0.3, hipTurn: 0.1, hipTilt: 0.06, hips: [0.01, 0.24, 0.14], footL: [-0.18, 0.42, 0.16], toeL: 0.08, ...pivot(0.5, 0) },
+    { at: 0.93, ease: 'linear', grip: [0.16, 0.12, 0.3], ...aim([0.32, 0.9, 0.12]), turn: 0.3, lean: 0.16, hipTurn: 0.2, hipTilt: 0, hips: [0.02, 0.16, 0.04], footL: [-0.16, 0.2, 0.05] },
+    { ...AXE_IDLE, at: 1 },
+  ],
+};
+
 export const DOUBLE_AXE: WeaponMoves = {
   idleClip: 'Idle_Loop',
   runClip: 'Jog_Fwd_Loop',
   life: { sink: 0.025, shift: 0.05, drift: 0.08 },
   stance: { idle: AXE_IDLE, walk: AXE_WALK, run: AXE_RUN },
   attacks: [{ keys: AXE_SWEEP }, { keys: AXE_CHOP }],
+  critical: AXE_CRITICAL,
 };

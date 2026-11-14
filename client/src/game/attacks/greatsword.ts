@@ -1,4 +1,4 @@
-import type { AttackKey, Pose, WeaponMoves } from './types';
+import type { AttackKey, CriticalMoves, Pose, WeaponMoves } from './types';
 
 /*
  * The zweihander: right hand at the guard, left at the pommel, left foot forward.
@@ -693,6 +693,307 @@ const LUNGING_THRUST: AttackKey[] = [
   },
 ];
 
+/*
+ * The critical: an executioner's blow on a stunned boss, 4 m away.
+ *
+ * Two long strides close the distance while the point drags along the ground on the left, then the body
+ * unwinds into one sweep of the tip at waist height from the left, across the front, round the right and
+ * behind, before it rises over the right shoulder to stand straight up overhead. The rig has no turn of the
+ * whole character, so the sweep is three quarters of a circle around the body and the rise closes the loop.
+ * It hangs there, barely breathing, and comes down on a diagonal through the boss into the ground on the
+ * right, the front foot stamping out under it. The blade lies in the dirt, is lifted over the top onto the
+ * right shoulder, settles, and comes back over the top into the guard.
+ *
+ * The three strides are root motion. The planted foot is moved back by exactly what the root moves forward (both
+ * linear, on the same key times), so it stays put on the ground while the other foot steps.
+ */
+const ZWEIHANDER_CRITICAL: CriticalMoves = {
+  travel: 1.85,
+  rootPath: [
+    { at: 0.05, forward: 0 },
+    { at: 0.14, forward: 0.6, ease: 'linear' },
+    { at: 0.26, forward: 1.4, ease: 'linear' },
+    { at: 0.35, forward: 1.85, ease: 'linear' },
+  ],
+  marks: { drag: 0.095, spin: 0.3, peak: 0.45, slam: 0.6, rest: 0.72, shoulder: 0.875 },
+  keys: [
+    // Commit: sinks, the point starts down and the wrists roll the edge round to face the coming sweep.
+    {
+      at: 0.05,
+      grip: [-0.06, -0.16, 0.42],
+      head: [-0.32, 0.12, 0.94],
+      edge: [0.9, -0.1, 0.3],
+      turn: -0.15,
+      lean: 0.25,
+      hipTurn: 0.05,
+      hipTilt: 0.1,
+      hips: [0, 0.2, 0.02],
+      footL: [-0.15, 0.18, 0],
+      footR: [0.18, -0.22, 0],
+      toeL: 0.1,
+      toeR: 0.6,
+      reach: 0.24,
+    },
+    // The point touches down on the left and drags. First stride: the right foot passes, the left stays planted.
+    {
+      at: 0.095,
+      ease: 'linear',
+      grip: [-0.12, -0.28, 0.34],
+      head: [-0.45, -0.42, 0.78],
+      edge: [0.78, 0, 0.45],
+      turn: -0.5,
+      lean: 0.35,
+      hipTurn: -0.2,
+      hipTilt: 0.12,
+      hips: [0, 0.22, -0.05],
+      footL: [-0.15, -0.12, 0],
+      footR: [0.17, -0.01, 0.18],
+      toeR: 0.3,
+      reach: 0.28,
+    },
+    {
+      at: 0.14,
+      ease: 'linear',
+      grip: [-0.14, -0.3, 0.33],
+      head: [-0.46, -0.42, 0.78],
+      turn: -0.6,
+      lean: 0.36,
+      hipTurn: -0.3,
+      hips: [0, 0.21, -0.12],
+      footL: [-0.15, -0.42, 0.04],
+      footR: [0.17, 0.2, 0],
+    },
+    // Second stride, the left foot past the right. The hips already start to unwind under the coiled shoulders.
+    {
+      at: 0.2,
+      ease: 'linear',
+      grip: [-0.16, -0.31, 0.32],
+      head: [-0.5, -0.4, 0.77],
+      turn: -0.75,
+      lean: 0.37,
+      hipTurn: -0.15,
+      hips: [0, 0.2, -0.08],
+      footL: [-0.15, -0.11, 0.18],
+      footR: [0.17, -0.2, 0],
+      toeL: 0.15,
+    },
+    // The spin: the left foot lands and the point comes off the ground and across the front at waist height.
+    {
+      at: 0.26,
+      ease: 'linear',
+      grip: [0.04, -0.26, 0.36],
+      head: [0, 0.05, 1],
+      edge: [1, 0, 0],
+      turn: -0.1,
+      lean: 0.3,
+      hipTurn: 0.35,
+      hipTilt: 0.1,
+      hips: [0, 0.21, -0.15],
+      footL: [-0.15, 0.2, 0],
+      footR: [0.18, -0.6, 0.04],
+    },
+    // Fastest here, sweeping round the right side, the hips well ahead of the shoulders. A third stride turns with it.
+    {
+      at: 0.3,
+      ease: 'linear',
+      grip: [0.25, -0.24, 0.2],
+      head: [1, 0.08, 0.05],
+      edge: [0.05, 0, -1],
+      turn: 0.75,
+      lean: 0.15,
+      hipTurn: 0.7,
+      hips: [0.02, 0.2, -0.08],
+      footL: [-0.15, 0, 0],
+      footR: [0.18, -0.525, 0.17],
+      toeL: 0.4,
+    },
+    // Behind on the right, the back foot landing wide behind for the cut.
+    {
+      at: 0.35,
+      ease: 'linear',
+      grip: [0.3, -0.12, 0.02],
+      head: [0.55, 0.2, -0.8],
+      edge: [-0.8, 0, -0.55],
+      turn: 1.3,
+      lean: 0.05,
+      hipTurn: 0.75,
+      hips: [0.02, 0.19, -0.3],
+      footL: [-0.15, -0.25, 0],
+      footR: [0.18, -0.5, 0],
+    },
+    // Rises over the right shoulder, the hips turning back first.
+    {
+      at: 0.4,
+      ease: 'linear',
+      grip: [0.28, 0.28, 0.06],
+      head: [0.25, 0.8, -0.55],
+      edge: [-0.35, 0.55, 0.45],
+      turn: 0.85,
+      lean: -0.05,
+      hipTurn: 0.3,
+      hips: [0.01, 0.19, -0.36],
+      toeL: 0.15,
+    },
+    // The peak: straight up overhead, a little back and to the left, edge to the boss, sat back on the rear leg.
+    {
+      at: 0.45,
+      ease: 'easeOut',
+      grip: [-0.02, 0.5, 0.18],
+      head: [-0.12, 1, -0.15],
+      edge: [0, 0.15, 1],
+      turn: -0.15,
+      lean: -0.08,
+      hipTurn: -0.1,
+      hipTilt: 0.05,
+      hips: [0, 0.2, -0.4],
+      toeR: 0.5,
+    },
+    // The hold: one breath in, the point trembling, the rear heel loading.
+    {
+      at: 0.5,
+      grip: [-0.02, 0.512, 0.175],
+      head: [-0.13, 1, -0.16],
+      lean: -0.09,
+      hips: [0, 0.21, -0.405],
+      footR: [0.18, -0.5, 0.03],
+    },
+    {
+      at: 0.55,
+      grip: [-0.03, 0.505, 0.17],
+      head: [-0.14, 1, -0.15],
+      turn: -0.18,
+      lean: -0.1,
+      hipTurn: -0.05,
+      hips: [0, 0.22, -0.41],
+    },
+    // The strike: the front foot stamps out, the hips go first and the shoulders whip after them.
+    {
+      at: 0.575,
+      ease: 'easeIn',
+      grip: [0.1, 0.25, 0.42],
+      head: [0.25, 0.45, 0.86],
+      edge: [0.2, -0.85, 0.45],
+      turn: 0.05,
+      lean: 0.25,
+      hipTurn: 0.25,
+      hipTilt: 0.12,
+      hips: [0.01, 0.25, -0.12],
+      footL: [-0.17, 0.1, 0.14],
+      footR: [0.18, -0.5, 0.06],
+    },
+    // Through the boss and into the ground on the right, the whole weight down over the front knee.
+    {
+      at: 0.6,
+      ease: 'linear',
+      impact: true,
+      grip: [0.18, -0.08, 0.42],
+      head: [0.38, -0.42, 0.82],
+      edge: [0.16, -0.73, -0.49],
+      turn: 0.4,
+      lean: 0.5,
+      hipTurn: 0.4,
+      hipTilt: 0.2,
+      hips: [0.02, 0.3, 0.17],
+      footL: [-0.19, 0.5, 0],
+      footR: [0.18, -0.5, 0.07],
+      toeL: 0.1,
+    },
+    // Buries itself a little further, and the body sinks after it.
+    {
+      at: 0.64,
+      ease: 'linear',
+      grip: [0.2, -0.14, 0.39],
+      head: [0.42, -0.48, 0.77],
+      edge: [0.2, -0.7, -0.5],
+      turn: 0.5,
+      lean: 0.56,
+      hipTurn: 0.45,
+      hips: [0.03, 0.33, 0.2],
+    },
+    // Rests in the dirt.
+    {
+      at: 0.72,
+      ease: 'easeOut',
+      grip: [0.21, -0.15, 0.38],
+      head: [0.43, -0.48, 0.76],
+      turn: 0.48,
+      lean: 0.54,
+      hipTurn: 0.42,
+      hips: [0.03, 0.32, 0.18],
+    },
+    // Hauled out and up, the front foot stepping home.
+    {
+      at: 0.77,
+      grip: [0.2, 0, 0.34],
+      head: [0.42, 0.2, 0.88],
+      edge: [0, -0.98, 0.22],
+      turn: 0.35,
+      lean: 0.38,
+      hipTurn: 0.3,
+      hipTilt: 0.12,
+      hips: [0.02, 0.26, 0],
+      footL: [-0.17, 0.34, 0.17],
+    },
+    {
+      at: 0.81,
+      grip: [0.22, 0.18, 0.3],
+      head: [0.35, 0.95, 0],
+      edge: [-0.15, 0, 1],
+      turn: 0.25,
+      lean: 0.22,
+      hipTurn: 0.28,
+      hips: [0.02, 0.2, -0.12],
+      footL: [-0.15, 0.18, 0],
+      reach: 0.24,
+    },
+    // Over the top and down onto the shoulder, the back foot stepping in.
+    {
+      at: 0.845,
+      grip: [0.21, 0.12, 0.29],
+      head: [0.4, 0.6, -0.65],
+      edge: [0, 0.75, 0.6],
+      hips: [0.02, 0.19, -0.06],
+      footR: [0.18, -0.36, 0.16],
+    },
+    {
+      at: 0.875,
+      ease: 'easeOut',
+      grip: [0.2, 0.08, 0.28],
+      head: [0.42, 0.25, -0.87],
+      edge: [0.05, 0.96, 0.3],
+      turn: 0.22,
+      lean: 0.25,
+      hipTurn: 0.28,
+      hipTilt: 0.1,
+      hips: [0.02, 0.18, 0.02],
+      footR: [0.18, -0.22, 0],
+      toeR: 0.6,
+      toeL: 0.1,
+    },
+    // Settles under the weight on the shoulder.
+    {
+      at: 0.91,
+      grip: [0.2, 0.065, 0.28],
+      lean: 0.23,
+      hips: [0.02, 0.19, 0.03],
+    },
+    // Back over the top into the guard.
+    {
+      at: 0.955,
+      grip: [0.12, 0.1, 0.42],
+      head: [0.15, 1, 0.2],
+      edge: [0, -0.2, 1],
+      turn: 0.3,
+      lean: 0.2,
+      hips: [0.02, 0.18, 0.04],
+    },
+    {
+      at: 1,
+      ...ZWEIHANDER_GUARD,
+    },
+  ],
+};
+
 export const ZWEIHANDER: WeaponMoves = {
   idleClip: 'Idle_Loop',
   runClip: 'Jog_Fwd_Loop',
@@ -700,4 +1001,5 @@ export const ZWEIHANDER: WeaponMoves = {
   life: { sink: 0.03, shift: 0.025, drift: 0.12, handLag: 0.5, runBob: 0.75, runSteady: 0.7, runBlendSeconds: 0.6 },
   stance: { idle: ZWEIHANDER_GUARD, walk: ZWEIHANDER_WALK, run: ZWEIHANDER_RUN },
   attacks: [{ keys: HIGH_RIGHT_TO_LOW_LEFT }, { keys: RISING_RETURN }, { keys: LUNGING_THRUST }],
+  critical: ZWEIHANDER_CRITICAL,
 };

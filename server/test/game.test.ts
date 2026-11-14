@@ -58,7 +58,8 @@ const FLOOD_MS = 2000;
 const SPEED_MARGIN_INPUTS = 15;
 
 const PUBLIC_INFO_FIELDS = ['appearance', 'avatarUrl', 'classId', 'id', 'level', 'stats', 'username'];
-const SNAPSHOT_LENGTH = 22;
+// The last entry is criticalTime.
+const SNAPSHOT_LENGTH = 23;
 
 type Welcome = Extract<ServerMessage, { t: 'welcome' }>;
 type Snapshot = Extract<ServerMessage, { t: 's' }>;

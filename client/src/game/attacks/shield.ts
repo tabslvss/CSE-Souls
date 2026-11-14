@@ -1,4 +1,4 @@
-import type { AttackKey, ItemPose, Pose, RollPose, Vec3, WeaponMoves } from './types';
+import type { AttackKey, CriticalMoves, ItemPose, Pose, RollPose, Vec3, WeaponMoves } from './types';
 
 /*
  * Mace and shield: a compact, shield-first fighter. The left shoulder sits behind the shield with the
@@ -245,6 +245,122 @@ const ROLL: RollPose = {
   curl: 0.5,
 };
 
+/** The shield shoved forward at the head of the charge, the body tucked in behind it. */
+const SHIELD_RAM: ItemPose = { grip: [-0.07, 0.02, 0.44], head: [0, 1, 0.12], edge: [0.84, 0, 0.54] };
+/** Driven up into the jaw: the face tips skyward, so the lower rim leads. */
+const SHIELD_BASH: ItemPose = { grip: [-0.07, 0.3, 0.4], head: [0, 0.75, -0.66], edge: [0.8, 0, 0.6] };
+/** Thrown wide to the left for balance under the raised mace. */
+const SHIELD_FLUNG: ItemPose = { grip: [-0.5, 0.15, 0.04], head: [-0.3, 0.94, 0.15], edge: [0.4, 0, 0.92] };
+/** Yanked back and low as the mace comes over, the counterweight of the strike. */
+const SHIELD_YANK: ItemPose = { grip: [-0.4, -0.12, -0.02], head: [-0.2, 0.95, 0.25], edge: [0.5, 0, 0.87] };
+/** The crouch after the blow: shield low and square in front, the eyes over its rim. */
+const SHIELD_CROUCH: ItemPose = { grip: [-0.1, -0.16, 0.38], head: [0, 1, 0.12], edge: [0.8, 0, 0.6] };
+
+/**
+ * The critical: a bounding shield charge, an upward bash into the jaw, a rebound hop, an underhand windmill of the
+ * mace that carries it over the head and lets it drop behind the shoulders, a held breath, then a leap and an
+ * overhead slam with both feet landing together. Body time is real time (no warp).
+ *
+ *   0.00-0.08 gather: crouch in behind the shield, mace drawn low behind the hip, back heel up.
+ *   0.08-0.25 the charge: the back foot drives, a bounding 2.7 m lunge, shield rammed out in front.
+ *   0.25      'bash': lands on the front foot as the shield drives up into the jaw. Root stops dead.
+ *   0.28-0.33 the rebound: a hop back to 2.1 m, landing square.
+ *   0.30-0.46 the windmill: the mace goes down past the hip, forward low, up over the head ('wind' at 0.4, the
+ *             fastest point, overhead) and on round behind the head as the arm rises.
+ *   0.47-0.555 the hold: mace high and cocked back over the head, shield flung wide. The knees load
+ *             (0.5, 'leap') and he springs up to about 0.7 m at 0.555 with the mace still cocked.
+ *   0.555-0.6 the strike: over the top in three keys, the shield yanked back, the body jackknifing forward.
+ *   0.6       'slam': the mace head meets the boss low at its front face (about 3.5 m out, 0.2 m off the
+ *             ground) as both feet land together in a deep squat.
+ *   0.6-0.7   the mace drives on down; the weight sinks. 0.7-0.82 a crouch behind the shield. 0.82-0.94 the back foot
+ *             steps home and he stands into the idle guard.
+ */
+const CRITICAL: CriticalMoves = {
+  travel: 2.3,
+  marks: { bash: 0.25, wind: 0.4, leap: 0.5, slam: 0.6 },
+  rootPath: [
+    { at: 0.08, forward: 0 },
+    { at: 0.12, forward: 0.1, up: 0, ease: 'easeIn' },
+    { at: 0.18, forward: 1.35, up: 0.3, ease: 'linear' },
+    { at: 0.25, forward: 2.7, up: 0, ease: 'linear' },
+    { at: 0.28, forward: 2.7, up: 0 },
+    { at: 0.305, forward: 2.4, up: 0.16, ease: 'easeOut' },
+    { at: 0.33, forward: 2.1, up: 0, ease: 'easeIn' },
+    { at: 0.5, forward: 2.1, up: 0 },
+    { at: 0.555, forward: 2.2, up: 0.7, ease: 'easeOut' },
+    { at: 0.6, forward: 2.3, up: 0, ease: 'easeIn' },
+  ],
+  keys: [
+    // Gather: down in behind the shield, the mace drawn back low, the back heel coming up to drive.
+    { at: 0.07, grip: [0.31, -0.2, -0.12], head: [0.08, -0.6, -0.8], edge: [0, 0.8, -0.6],
+      hips: [0.01, 0.2, -0.02], hipTurn: 0.3, hipTilt: 0.2, turn: 0.5, lean: 0.42, headFollow: 0, headPitch: -0.25,
+      footL: FOOT_L, footR: [0.17, -0.26, 0.06], toeL: 0.1, toeR: 0.45, off: SHIELD_RAM },
+    // Push off: the back leg straightens and the front foot leaves the floor.
+    { at: 0.12, ease: 'easeIn', grip: [0.32, -0.22, -0.16], head: [0.06, -0.75, -0.66], edge: [0, 0.66, -0.75],
+      hips: [0.01, 0.15, 0.1], lean: 0.5, footL: [-0.16, 0.26, 0.16], footR: [0.17, -0.3, 0.08] },
+    // In the air: front knee up, back leg trailing, shield leading.
+    { at: 0.18, ease: 'linear', grip: [0.32, -0.24, -0.2], head: [0.05, -0.84, -0.54], edge: [0, 0.54, -0.84],
+      hips: [0, 0.12, 0.08], lean: 0.44, turn: 0.55, footL: [-0.15, 0.32, 0.22], footR: [0.16, -0.4, 0.3] },
+    // Bash: down onto the front foot as the shield drives up into the jaw; the body rises behind it.
+    { at: 0.25, ease: 'easeIn', grip: [0.32, -0.24, -0.21], head: [0.05, -0.87, -0.5], edge: [0, 0.5, -0.87],
+      hips: [0, 0.13, 0.12], hipTurn: 0.26, hipTilt: 0.05, turn: 0.58, lean: 0.12, headPitch: -0.4,
+      footL: [-0.16, 0.32, 0], footR: [0.17, -0.3, 0.07], off: SHIELD_BASH },
+    { at: 0.28, ease: 'easeOut', grip: [0.32, -0.27, -0.12], head: [0.05, -0.94, -0.33], edge: [0, 0.33, -0.94],
+      hips: [0, 0.12, 0.1], lean: 0.08, off: { grip: [-0.08, 0.33, 0.38], head: [0, 0.7, -0.71], edge: [0.8, 0, 0.6] } },
+    // The rebound hop, and the windmill begins: down past the hip and forward, low.
+    { at: 0.305, ease: 'linear', grip: [0.32, -0.25, 0.18], head: [0.05, -0.98, 0.17], edge: [0, -0.17, -0.98],
+      hips: [0, 0.1, 0.02], hipTurn: 0.15, hipTilt: 0, turn: 0.3, lean: -0.05, headPitch: -0.3,
+      footL: [-0.17, 0.22, 0.2], footR: [0.18, -0.18, 0.2], off: SHIELD_COIL },
+    // Landed square. The mace comes up in front, the body leaning back out of its way.
+    { at: 0.345, ease: 'linear', grip: [0.32, 0.06, 0.36], head: [0.05, -0.42, 0.91], edge: [0, -0.91, -0.42],
+      hips: [0, 0.16, -0.02], hipTurn: 0.05, turn: 0.05, lean: -0.12,
+      footL: [-0.18, 0.18, 0], footR: [0.18, -0.22, 0.02], toeL: 0.15, toeR: 0.35 },
+    { at: 0.38, ease: 'linear', grip: [0.32, 0.4, 0.28], head: [0.05, 0.42, 0.91], edge: [0, -0.91, 0.42],
+      hipTurn: 0.1, turn: 0.15, lean: -0.15, off: SHIELD_GIVE },
+    // Over the top, fastest here.
+    { at: 0.405, ease: 'linear', grip: [0.32, 0.54, -0.04], head: [0.05, 0.98, 0.17], edge: [0, -0.17, 0.98],
+      hipTurn: 0.18, turn: 0.32, lean: -0.18 },
+    { at: 0.43, ease: 'linear', grip: [0.33, 0.3, -0.32], head: [0.05, 0.64, -0.77], edge: [0, 0.77, 0.64],
+      hipTurn: 0.22, turn: 0.45, lean: -0.15, off: SHIELD_OPEN },
+    // The arm rises and the mace swings on past the hold, out behind the head.
+    { at: 0.45, ease: 'linear', grip: [0.3, 0.45, -0.18], head: [0.05, 0.31, -0.95], edge: [0, 0.95, 0.31],
+      turn: 0.38, lean: -0.16 },
+    // The hold: mace high and cocked back over the head, shield flung wide, a slow breath down into the knees.
+    { at: 0.47, ease: 'easeOut', grip: [0.26, 0.5, -0.1], head: [0.05, 0.5, -0.87], edge: [0, 0.87, 0.5],
+      hips: [0, 0.18, -0.02], hipTurn: 0.12, hipTilt: -0.05, turn: 0.25, lean: -0.14, headPitch: -0.25, off: SHIELD_FLUNG },
+    { at: 0.5, grip: [0.25, 0.52, -0.11], head: [0.05, 0.47, -0.88], edge: [0, 0.88, 0.47],
+      hips: [0, 0.27, 0.02], hipTilt: 0.05, lean: -0.08, footR: [0.18, -0.22, 0.05] },
+    // Spring: the legs drive the leap.
+    { at: 0.52, ease: 'easeIn', grip: [0.25, 0.54, -0.1], head: [0.05, 0.52, -0.85],
+      hips: [0, 0.08, 0.02], hipTilt: -0.05, lean: -0.14, footL: [-0.18, 0.2, 0.12], footR: [0.18, -0.25, 0.16] },
+    // The top of the leap: knees tucked, mace still cocked, a tremble.
+    { at: 0.555, ease: 'easeOut', grip: [0.24, 0.55, -0.08], head: [0.05, 0.56, -0.83], edge: [0, 0.83, 0.56],
+      hips: [0, 0.2, 0.04], hipTilt: -0.1, turn: 0.28, lean: -0.2, footL: [-0.17, 0.28, 0.32], footR: [0.17, -0.08, 0.36] },
+    // The strike, over the top: the hips fire first, the shoulder follows.
+    { at: 0.57, ease: 'easeIn', grip: [0.27, 0.58, 0.04], head: [0.05, 0.98, -0.17], edge: [0, 0.17, 0.98],
+      hips: [0, 0.18, 0.06], hipTurn: 0, hipTilt: 0.05, turn: 0.12, lean: -0.02, off: SHIELD_YANK },
+    { at: 0.585, ease: 'linear', grip: [0.29, 0.32, 0.36], head: [0.05, 0.64, 0.77], edge: [0, -0.77, 0.64],
+      hips: [0, 0.22, 0.1], hipTurn: -0.12, hipTilt: 0.2, turn: -0.1, lean: 0.3,
+      footL: [-0.18, 0.2, 0.12], footR: [0.18, -0.19, 0.12] },
+    { at: 0.6, ease: 'linear', impact: true, grip: [0.3, -0.12, 0.46], head: [0.05, -0.7, 0.71], edge: [0, -0.71, -0.7],
+      hips: [0, 0.34, 0.12], hipTurn: -0.18, hipTilt: 0.35, turn: -0.22, lean: 0.55, headPitch: 0.1,
+      footL: [-0.17, 0.2, 0], footR: [0.18, -0.2, 0], toeL: 0.25, toeR: 0.3 },
+    // Carried on down by the weight: the mace grinds in, the squat sinks.
+    { at: 0.64, ease: 'easeOut', grip: [0.3, -0.2, 0.42], head: [0.05, -0.82, 0.57], edge: [0, -0.57, -0.82],
+      hips: [0, 0.4, 0.1], hipTilt: 0.38, turn: -0.26, lean: 0.62 },
+    // Into the crouch behind the shield, mace drawn back to the side.
+    { at: 0.72, grip: [0.33, -0.16, 0.24], head: [0.12, 0.35, 0.93], edge: [0, -0.93, 0.35],
+      hips: [0, 0.32, 0.03], hipTurn: 0.12, hipTilt: 0.25, turn: 0.3, lean: 0.4, headPitch: -0.1, off: SHIELD_CROUCH },
+    { at: 0.8, grip: [0.33, -0.15, 0.22], head: [0.12, 0.45, 0.88], edge: [0, -0.88, 0.45],
+      hips: [0, 0.3, 0.03], lean: 0.38 },
+    // The back foot steps home, and he stands into the guard.
+    { at: 0.86, grip: [0.31, -0.12, 0.15], head: [0.12, 0.7, 0.3], edge: [0, -0.3, 0.95],
+      hips: [0, 0.18, 0.02], hipTurn: 0.2, hipTilt: 0.12, turn: 0.32, lean: 0.2, headPitch: 0,
+      footR: [0.175, -0.24, 0.12], toeR: 0.45, off: SHIELD_GIVE },
+    { at: 0.94, ...MACE_IDLE, headPitch: 0, off: SHIELD_GUARD },
+  ],
+};
+
 export const MACE_AND_SHIELD: WeaponMoves = {
   idleClip: 'Idle_Shield_Loop',
   runClip: 'Jog_Fwd_Loop',
@@ -256,4 +372,5 @@ export const MACE_AND_SHIELD: WeaponMoves = {
   offStance: { idle: SHIELD_GUARD, walk: SHIELD_WALK, run: SHIELD_RUN },
   roll: ROLL,
   attacks: [{ keys: CHOP }, { keys: HOOK }],
+  critical: CRITICAL,
 };

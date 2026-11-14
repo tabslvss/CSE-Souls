@@ -1,7 +1,19 @@
 import * as THREE from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { DODGE_SECONDS, type AnimationId } from '../../../shared/sim';
-import type { AttackKey, AxisName, Ease, HeldItem, ItemPose, Pose, Vec3, WeaponSetup } from './attacks/types';
+import {
+  CRITICAL_IMPACT_AT,
+  type AttackKey,
+  type AxisName,
+  type Ease,
+  type HeldItem,
+  type ItemPose,
+  type Pose,
+  type RootKey,
+  type SpeedKey,
+  type Vec3,
+  type WeaponSetup,
+} from './attacks/types';
 import { animateOpenBook, createOpenBook } from './openBook';
 import { createQuiver } from './quiver';
 import { createShieldStraps } from './shieldStraps';
@@ -380,6 +392,139 @@ interface CompiledAttack {
   impactAt: number;
 }
 
+/** Samples of body time against real time, from 0 to 1 at even steps. */
+const WARP_SAMPLES = 420;
+/** Blending into a critical from whatever was playing: a little longer than into an attack, for the bigger change. */
+const CRITICAL_TRANSITION_SECONDS = 0.2;
+
+interface CompiledCritical extends CompiledAttack {
+  clip?: string;
+  travel: number;
+  /** Starts at [0, 0, 0], as [at, forward, up] with an ease. */
+  root: RootKey[];
+  /** Body time at each real-time sample, or null when they're the same. */
+  warp: Float32Array | null;
+  /** In real time. */
+  marks: Record<string, number>;
+}
+
+/** Integrates the speed curve, each side of the impact scaled to keep its length, so the impact stays where the rules land it. */
+function compileWarp(keys: readonly SpeedKey[] | undefined): Float32Array | null {
+  if (!keys || keys.length === 0) return null;
+  const sorted = [...keys].sort((a, b) => a.at - b.at);
+  const speedAt = (t: number) => {
+    if (t <= sorted[0].at) return sorted[0].speed;
+    for (let i = 1; i < sorted.length; i += 1) {
+      if (t <= sorted[i].at) {
+        const a = sorted[i - 1];
+        const b = sorted[i];
+        return a.speed + ((b.speed - a.speed) * (t - a.at)) / Math.max(1e-6, b.at - a.at);
+      }
+    }
+    return sorted[sorted.length - 1].speed;
+  };
+  const sum = new Float64Array(WARP_SAMPLES + 1);
+  for (let i = 1; i <= WARP_SAMPLES; i += 1) {
+    const a = Math.max(0.001, speedAt((i - 1) / WARP_SAMPLES));
+    const b = Math.max(0.001, speedAt(i / WARP_SAMPLES));
+    sum[i] = sum[i - 1] + (a + b) / 2;
+  }
+  const split = Math.round(CRITICAL_IMPACT_AT * WARP_SAMPLES);
+  const table = new Float32Array(WARP_SAMPLES + 1);
+  for (let i = 0; i <= WARP_SAMPLES; i += 1) {
+    table[i] =
+      i <= split
+        ? (CRITICAL_IMPACT_AT * sum[i]) / sum[split]
+        : CRITICAL_IMPACT_AT + ((1 - CRITICAL_IMPACT_AT) * (sum[i] - sum[split])) / (sum[WARP_SAMPLES] - sum[split]);
+  }
+  return table;
+}
+
+function warpedAt(table: Float32Array | null, t: number): number {
+  const u = Math.min(1, Math.max(0, t));
+  if (!table) return u;
+  const x = u * WARP_SAMPLES;
+  const i = Math.min(WARP_SAMPLES - 1, Math.floor(x));
+  return table[i] + (table[i + 1] - table[i]) * (x - i);
+}
+
+/** Real time at which body time reaches b. */
+function unwarpedAt(table: Float32Array | null, b: number): number {
+  const u = Math.min(1, Math.max(0, b));
+  if (!table) return u;
+  let lo = 0;
+  let hi = WARP_SAMPLES;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (table[mid] < u) lo = mid;
+    else hi = mid;
+  }
+  const span = table[hi] - table[lo];
+  return (lo + (span > 0 ? (u - table[lo]) / span : 0)) / WARP_SAMPLES;
+}
+
+/** Puts the first attack's impact at the critical's, stretching the time on each side of it. */
+function stretchToCritical(keys: AttackKey[]): AttackKey[] {
+  const impact = keys.find((key) => key.impact)?.at ?? 0.5;
+  return keys.map((key) => ({
+    ...key,
+    at:
+      key.at <= impact
+        ? (key.at / impact) * CRITICAL_IMPACT_AT
+        : CRITICAL_IMPACT_AT + ((key.at - impact) / (1 - impact)) * (1 - CRITICAL_IMPACT_AT),
+  }));
+}
+
+function compileCritical(setup: WeaponSetup, idle: Frame): CompiledCritical {
+  const authored = setup.critical;
+  const fallback = setup.attacks[0];
+  const keys = authored ? authored.keys : fallback?.keys ? stretchToCritical(fallback.keys) : undefined;
+  const clip = authored ? undefined : fallback?.clip;
+  const travel = authored?.travel ?? 0;
+  const root =
+    authored?.rootPath && authored.rootPath.length > 0
+      ? [...authored.rootPath].sort((a, b) => a.at - b.at)
+      : travel !== 0
+        ? [
+            { at: 0.2, forward: 0 },
+            { at: CRITICAL_IMPACT_AT, forward: travel, ease: 'smooth' as Ease },
+          ]
+        : [];
+  const warp = compileWarp(authored?.timeWarp);
+  const marks: Record<string, number> = {};
+  for (const [name, at] of Object.entries(authored?.marks ?? {})) marks[name] = unwarpedAt(warp, at);
+  return {
+    frames: keys ? compileAttackKeys(keys, clip !== undefined, setup, idle) : null,
+    impactAt: keys?.find((key) => key.impact)?.at ?? CRITICAL_IMPACT_AT,
+    clip,
+    travel,
+    root,
+    warp,
+    marks,
+  };
+}
+
+/** [forward, up] at body time b, eased between keys and held after the last. */
+function sampleRoot(keys: readonly RootKey[], b: number, out: { forward: number; up: number }): void {
+  let fromAt = 0;
+  let fromForward = 0;
+  let fromUp = 0;
+  for (const key of keys) {
+    if (b < key.at) {
+      const span = key.at - fromAt;
+      const e = easeAmount(key.ease ?? 'smooth', span > 0 ? (b - fromAt) / span : 1);
+      out.forward = fromForward + (key.forward - fromForward) * e;
+      out.up = fromUp + ((key.up ?? 0) - fromUp) * e;
+      return;
+    }
+    fromAt = key.at;
+    fromForward = key.forward;
+    fromUp = key.up ?? 0;
+  }
+  out.forward = fromForward;
+  out.up = fromUp;
+}
+
 interface CompiledSetup {
   idle: Frame;
   walk: Frame;
@@ -397,6 +542,7 @@ interface CompiledSetup {
   /** Sitting on the ground, with nothing in the hands. */
   rest: Frame;
   attacks: CompiledAttack[];
+  critical: CompiledCritical;
 }
 
 function clearBody(frame: Frame): Frame {
@@ -514,6 +660,7 @@ function compileSetup(setup: WeaponSetup): CompiledSetup {
         impactAt: keys?.find((key) => key.impact)?.at ?? 0.5,
       };
     }),
+    critical: compileCritical(setup, idle),
   };
   compiledSetups.set(setup, compiled);
   return compiled;
@@ -824,6 +971,23 @@ export interface WeaponRig {
   attackPhase: () => number;
   /** The share of the attack at which this one in the list lands its hit. */
   impactKeyAt: (index: number) => number;
+  /** Plays the critical over this many seconds, under the 'attack' animation id. startAttack ends it. */
+  startCritical: (seconds: number) => void;
+  cancelCritical: () => void;
+  /** From 0 to 1 in real time during a critical, and -1 otherwise. */
+  criticalPhase: () => number;
+  /** How fast the body is moving through the critical against real time: below 1 is slow motion. 1 outside one. */
+  criticalTimeScale: () => number;
+  /** Where the keys are during a critical, in their warped time, and -1 otherwise. */
+  criticalKeyPhase: () => number;
+  /** The critical's named moments, in real time. */
+  criticalMarks: () => Readonly<Record<string, number>>;
+  /** Meters along the facing and up that the whole character is moved right now. Zero outside a critical. */
+  criticalRoot: (out: { forward: number; up: number }) => void;
+  /** Meters along the facing that a critical ends up moved. */
+  criticalTravel: number;
+  /** The clip a critical plays under its keys, if any. */
+  criticalClip: string | undefined;
   dispose: () => void;
 }
 
@@ -1216,6 +1380,14 @@ export function createWeaponRig(
   let attackClock = 0;
   let attackIndex = 0;
   let attacking = false;
+  // A critical plays through the attack path, with its own frames, length and time warp.
+  let critical = false;
+  let playSeconds = attackSeconds;
+  /** How far through the attack or critical the body is, in the keys' time. */
+  const keyTime = () => {
+    const t = Math.min(1, attackClock / playSeconds);
+    return critical ? warpedAt(compiled.critical.warp, t) : t;
+  };
   let drinkClock = 0;
   let dodgeClock = 0;
   let gaitTurn = 0;
@@ -1293,13 +1465,13 @@ export function createWeaponRig(
   };
 
   const sampleAttack = () => {
-    const frames = compiled.attacks[attackIndex % compiled.attacks.length].frames;
+    const frames = critical ? compiled.critical.frames : compiled.attacks[attackIndex % compiled.attacks.length].frames;
     if (!frames) {
       copyFrame(compiled.dodge, sampled);
       sampled.ch[C.MAIN_WEIGHT] = 0;
       return;
     }
-    const t = Math.min(1, attackClock / attackSeconds);
+    const t = keyTime();
     const count = frames.length;
     let next = 0;
     while (next < count && frames[next].at <= t) next += 1;
@@ -1381,7 +1553,9 @@ export function createWeaponRig(
       return;
     }
     switch (animation) {
+      // A critical plays through the attack path, with its own frames.
       case 'attack':
+      case 'critical':
         sampleAttack();
         break;
       case 'idle':
@@ -1437,7 +1611,7 @@ export function createWeaponRig(
       carrySeconds = BOW_STOW_SECONDS;
     }
     if (animation === 'attack') {
-      const taken = (attackClock / attackSeconds - BOW_TAKE_FROM) / (BOW_TAKE_UNTIL - BOW_TAKE_FROM);
+      const taken = (keyTime() - BOW_TAKE_FROM) / (BOW_TAKE_UNTIL - BOW_TAKE_FROM);
       bowInHand = Math.max(bowInHand, Math.min(1, taken));
     } else if (animation !== 'death') {
       // Dead hands stay as they were: a bow in hand falls with the hand.
@@ -1447,7 +1621,7 @@ export function createWeaponRig(
 
   /** A shot that starts from the back sends the right hand behind the shoulder first. The bell is gone by the shot's first key, which then plays as authored. */
   const reachForBow = () => {
-    const u = attackClock / (attackSeconds * BOW_REACH_UNTIL);
+    const u = keyTime() / BOW_REACH_UNTIL;
     if (u >= 1) return;
     const { ch } = output;
     const bell = Math.sin(u * Math.PI) ** 2;
@@ -1887,8 +2061,13 @@ export function createWeaponRig(
       gaitBlend += ((animation === 'walk' || animation === 'run' ? 1 : 0) - gaitBlend) * gaitStep;
       runBlend += ((animation === 'run' ? 1 : 0) - runBlend) * gaitStep;
       if (animation === 'attack') attackClock += seconds;
-      else attacking = false;
-      if (attacking && attackClock >= attackSeconds) attacking = false;
+      else {
+        attacking = false;
+        critical = false;
+        playSeconds = attackSeconds;
+      }
+      // A finished critical keeps its last frame until the next animation, but no longer counts as playing.
+      if (attacking && attackClock >= playSeconds) attacking = false;
       if (animation !== source) {
         carryIsStep = source === 'attack' && animation === 'idle';
         const leavingRun = source === 'run';
@@ -1897,7 +2076,9 @@ export function createWeaponRig(
         needsCarry = true;
         carrySeconds =
           animation === 'attack'
-            ? ATTACK_TRANSITION_SECONDS
+            ? critical
+              ? CRITICAL_TRANSITION_SECONDS
+              : ATTACK_TRANSITION_SECONDS
             : animation === 'death'
               ? DEATH_TRANSITION_SECONDS
               : animation === 'hit'
@@ -1961,7 +2142,7 @@ export function createWeaponRig(
         if (quiver) quiver.visible = !weaponsPutAway;
       }
       if (offItem?.built) {
-        animateOpenBook(offItem.holder.children[0], clock, attacking ? Math.min(1, attackClock / attackSeconds) : -1);
+        animateOpenBook(offItem.holder.children[0], clock, attacking ? keyTime() : -1);
       }
 
       if (bowString) {
@@ -2017,6 +2198,8 @@ export function createWeaponRig(
       attackIndex = index;
       attackClock = 0;
       attacking = true;
+      critical = false;
+      playSeconds = attackSeconds;
       arrowDrawn = false;
       bowFromBack = bowInHand < 0.5;
       copyFrame(output, entry);
@@ -2026,6 +2209,52 @@ export function createWeaponRig(
         carrySeconds = ATTACK_TRANSITION_SECONDS;
       }
     },
+
+    startCritical(seconds) {
+      attackClock = 0;
+      attacking = true;
+      critical = true;
+      playSeconds = Math.max(0.1, seconds);
+      arrowDrawn = false;
+      bowFromBack = bowInHand < 0.5;
+      // The first keys blend from wherever the body is, so it comes in from idle, a walk or a swing without a pop.
+      copyFrame(output, entry);
+      if (source === 'attack') {
+        needsCarry = true;
+        carrySeconds = CRITICAL_TRANSITION_SECONDS;
+      }
+    },
+
+    cancelCritical() {
+      if (!critical) return;
+      critical = false;
+      attacking = false;
+      playSeconds = attackSeconds;
+    },
+
+    criticalPhase: () => (critical && attacking ? Math.min(1, attackClock / playSeconds) : -1),
+
+    criticalTimeScale() {
+      const table = compiled.critical.warp;
+      if (!critical || !attacking || !table) return 1;
+      const i = Math.min(WARP_SAMPLES - 1, Math.floor(Math.min(1, attackClock / playSeconds) * WARP_SAMPLES));
+      return (table[i + 1] - table[i]) * WARP_SAMPLES;
+    },
+
+    criticalMarks: () => compiled.critical.marks,
+    criticalKeyPhase: () => (critical && attacking ? keyTime() : -1),
+
+    criticalRoot(out) {
+      if (!critical || !attacking) {
+        out.forward = 0;
+        out.up = 0;
+        return;
+      }
+      sampleRoot(compiled.critical.root, keyTime(), out);
+    },
+
+    criticalTravel: compiled.critical.travel,
+    criticalClip: compiled.critical.clip,
 
     stretch: () => stretch,
     legStretch: () => legStretch,
@@ -2038,7 +2267,8 @@ export function createWeaponRig(
       if (base) mainItem.holder.localToWorld(base.set(0, mainItem.butt, 0));
     },
 
-    attackPhase: () => (attacking ? Math.min(1, attackClock / attackSeconds) : -1),
+    // A critical isn't an attack to the code that times swings and trails by it: that reads criticalPhase.
+    attackPhase: () => (attacking && !critical ? Math.min(1, attackClock / attackSeconds) : -1),
     impactKeyAt: (index) => compiled.attacks[index % compiled.attacks.length].impactAt,
 
     dispose() {

@@ -30,7 +30,8 @@ The game is in active development, and the project deadline is December 1, 2026.
 | Forest, castle and the rest of the map | Being finished. Not connected to the game yet. |
 | Hit effects, camera effects, VHS filter, combat sounds | Being finished. Not connected to the game yet. |
 | Full-body attack animations for all 12 weapons | Being finished |
-| Village, graveyard, enemies other than animals, weapon loot, the boss | Not started |
+| The Great Bull boss: moves, stance break, critical hits, impact frames, layered boss music | Built. Server tests written; the fight has not been played through or listened to yet. |
+| Village, graveyard, enemies other than animals, weapon loot, the final boss | Not started |
 
 ## What exists now
 
@@ -49,9 +50,10 @@ The game is in active development, and the project deadline is December 1, 2026.
 | `Shift` | Run |
 | `Space` | Jump |
 | `C` | Dodge roll |
-| Left click | Attack |
+| Left click | Attack. Next to a stunned boss's head, a critical hit |
 | `1` or `Numpad 1` | Drink a healing potion |
 | `E` | Open a chest, or rest at a Binary Grace |
+| `Q` or middle mouse button | Lock on to a target, or let go |
 | `M` | World map |
 | Scroll | Camera distance |
 | `Esc` | Pause |
@@ -67,6 +69,8 @@ The game is in active development, and the project deadline is December 1, 2026.
 The code is in `server/src/app/realtime.ts` and `client/src/game/net.ts`.
 
 **PS1 dither shader.** `client/src/game/psxRenderer.ts` draws the scene to a small render target, 240 to 300 pixels tall. A fragment shader then applies 4x4 Bayer ordered dithering and rounds each color channel to 32 levels. Materials also snap their vertices to a coarse screen grid, which gives the PS1 wobble. `/play` and `/create` both use this renderer.
+
+**The Great Bull.** Cinderhorn, the Great Bull, waits in a ring of standing stones at the end of a trail from the spawn (`shared/boss.ts`, `server/src/app/creatures.ts`). It swipes with its horns, charges, leaps, spits fireballs and, below half health, stomps out a ring you have to jump or roll through. Every move is shown on the ground before it lands. Each hit on it also fills a stance meter, the thin gold bar under its health. When the meter fills, its stance breaks: it collapses for a few seconds with a glowing weak point on its head. Attack from near its head then, and you do a critical hit instead of a normal swing: a 2.8 second move for your weapon, during which you can't be hurt and the blow lands for six times your damage. The server checks the stun, the distance, the angle and the line of sight itself, and only ever hears that you pressed attack. In the browser, the critical has its own camera, slow motion, black and white dithered impact frames and sounds (`client/src/game/fx/critical.ts`, `client/src/game/impactFrames.ts`). The boss music has three layers that come and go with the fight, drops away on a stance break and swells back on the critical's blow (`client/src/sound.ts`).
 
 ### Still to come
 
@@ -226,7 +230,8 @@ The course grades individual commits on the default branch, and "If a commit is 
 Made by Tabshir Khandaker, Kristian Schuchman and Ryan Chan.
 
 - **Music:** "Night Vigil" and "Ancient Rite" by Kevin MacLeod ([incompetech.com](https://incompetech.com)), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Re-encoded for the web, with short fades added at each end.
-- **Sound effects:** website and most combat sounds generated with ElevenLabs. Check that the account's plan allows sharing them before this repo goes public. Others are from [Impact Sounds](https://kenney.nl/assets/impact-sounds) and [RPG Audio](https://kenney.nl/assets/rpg-audio) by Kenney, CC0.
+- **Boss music:** made from "Final Battle of the Dark Wizards" by Kevin MacLeod ([incompetech.com](https://incompetech.com)), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Edited and layered into loops and short pieces by `tools/build-boss-music.py`.
+- **Sound effects:** website and most combat sounds generated with ElevenLabs. Check that the account's plan allows sharing them before this repo goes public. Others are from [Impact Sounds](https://kenney.nl/assets/impact-sounds), [RPG Audio](https://kenney.nl/assets/rpg-audio) and [Sci-fi Sounds](https://kenney.nl/assets/sci-fi-sounds) by Kenney, CC0. The boss and critical hit sounds are layered by `tools/build-crit-sfx.py`.
 - **Animals:** [Ultimate Animated Animal Pack](https://quaternius.com/packs/ultimateanimatedanimals.html) by Quaternius, CC0.
 - **World:** Quaternius, Kenney, chilly_durango, Screaming Brain Studios and others. Details are in `client/public/models/LICENSES.txt` and on the `/credits` page.
 - **Characters:** [Universal Base Characters](https://quaternius.itch.io/universal-base-characters) and [Modular Character Outfits - Fantasy](https://quaternius.itch.io/modular-character-outfits-fantasy) by Quaternius, [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Parts were combined onto one skeleton, with polygon counts and textures reduced.

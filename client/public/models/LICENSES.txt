@@ -71,6 +71,9 @@ world/castle.glb, world/props.glb
   and normalized. They are not CC0: the ElevenLabs terms apply. https://elevenlabs.io/terms-of-use
   Impact Sounds and RPG Audio, by Kenney (CC0 1.0): https://kenney.nl/assets/impact-sounds and
   https://kenney.nl/assets/rpg-audio. Used alone in the footsteps and some hits, and layered into others.
+  Sci-fi Sounds, by Kenney (CC0 1.0): https://kenney.nl/assets/sci-fi-sounds. Layered into the boss and
+  critical hit sounds (boss-*, crit-*, impact-frame-*), which also use synthesis made for this project by
+  tools/build-crit-sfx.py.
 
 ../audio/sfx/*
   Website sounds, generated with ElevenLabs Sound Effects for this project. The ElevenLabs terms apply.
@@ -79,6 +82,12 @@ world/castle.glb, world/props.glb
   "Night Vigil" and "Ancient Rite" by Kevin MacLeod (incompetech.com). Licensed under Creative Commons:
   By Attribution 4.0. https://creativecommons.org/licenses/by/4.0/
   Changes: compressed for the web, with a short fade added at each end.
+
+../audio/music/boss/*.mp3
+  Made from "Final Battle of the Dark Wizards" by Kevin MacLeod (incompetech.com). Licensed under Creative
+  Commons: By Attribution 4.0. https://creativecommons.org/licenses/by/4.0/
+  Changes: edited and layered. Cut into a 24-bar loop split into three filtered layers, with added drums,
+  drone and choir pad, plus short intro, stun, outro and victory pieces. Built by tools/build-boss-music.py.
 
 ../icons/input/*.svg
   Input Prompts 1.5A, by Kenney (CC0 1.0): https://kenney.nl/assets/input-prompts

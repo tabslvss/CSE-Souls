@@ -1,9 +1,31 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useInputDevice } from '../components/InputGlyph';
 import { Divider, Panel, Sigil } from '../components/Ornaments';
 import { HeroScene } from '../scene/HeroScene';
 import { useSession } from '../session';
 import { sound } from '../sound';
+import { PadHints, type PadHint } from '../ui/PadHints';
+
+const AUTH_HINTS: PadHint[] = [
+  { button: 'dpadUpDown', label: 'Move' },
+  { button: 'confirm', label: 'Select' },
+  { button: 'x', label: 'Show password' },
+  { button: 'y', label: 'Switch page' },
+  { button: 'back', label: 'Back' },
+];
+
+/** Shown only while a controller is in use: the controller can move around the form, but not type. */
+function KeyboardNote() {
+  const pad = useInputDevice() !== 'keyboard';
+  if (!pad) return null;
+  return (
+    <p className="pad-tip" role="note">
+      Typing your username and password needs a keyboard. The controller can still move between the fields and press
+      the buttons.
+    </p>
+  );
+}
 
 const WELCOME_MS = 1400;
 const BREACH_CHECK_DELAY_MS = 500;
@@ -31,8 +53,10 @@ function AuthFrame({ title, subtitle, children }: { title: string; subtitle: str
         <h1>{title}</h1>
         <p className="auth__subtitle">{subtitle}</p>
         <Divider />
+        <KeyboardNote />
         {children}
       </Panel>
+      <PadHints hints={AUTH_HINTS} />
     </section>
   );
 }
@@ -73,7 +97,7 @@ function PasswordField({
           aria-describedby={describedBy}
           required
         />
-        <button type="button" className="field__action" onClick={() => setShown(!shown)}>
+        <button type="button" className="field__action" data-pad-x onClick={() => setShown(!shown)}>
           {shown ? 'Hide' : 'Show'}
         </button>
       </div>
@@ -144,7 +168,7 @@ export function LoginPage() {
         </button>
       </form>
       <p className="auth__switch">
-        New here? <Link to={`/register${nextQuery}`}>Create an account</Link>
+        New here? <Link to={`/register${nextQuery}`} data-pad-y>Create an account</Link>
       </p>
     </AuthFrame>
   );
@@ -251,7 +275,7 @@ export function RegisterPage() {
         </button>
       </form>
       <p className="auth__switch">
-        Already have an account? <Link to={`/login${nextQuery}`}>Log in</Link>
+        Already have an account? <Link to={`/login${nextQuery}`} data-pad-y>Log in</Link>
       </p>
     </AuthFrame>
   );

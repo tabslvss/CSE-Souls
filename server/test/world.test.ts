@@ -7,9 +7,29 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
+import {
+  BOSS_MOVES,
+  BOSS_STANCE,
+  BossMove,
+  CRITICAL_DAMAGE_MULTIPLIER,
+  criticalDamage,
+  inCritWindow,
+  packStance,
+  packStunLeft,
+} from '../../shared/boss.js';
 import { CLASSES, DEFAULT_APPEARANCE, MAX_STAT, type ClassId } from '../../shared/classes.js';
 import { collide, segmentBlocked } from '../../shared/collision.js';
-import { attackDamage, CHEST_REWARD_DUST, INTERACT_RANGE, RESPAWN_SECONDS, upgradeCost, weaponFor } from '../../shared/combat.js';
+import {
+  attackDamage,
+  CHEST_REWARD_DUST,
+  CRITICAL_IMPACT_TIME,
+  CRITICAL_SECONDS,
+  INTERACT_RANGE,
+  RESPAWN_SECONDS,
+  staggerPower,
+  upgradeCost,
+  weaponFor,
+} from '../../shared/combat.js';
 import { CORPSE_SECONDS, CREATURE_BY_ID, CreatureState, MAX_ATTACKERS_PER_PLAYER } from '../../shared/creatures.js';
 import { MAP } from '../../shared/mapData.js';
 import { GRACE_DISCOVER_RADIUS, GRACE_SEATS } from '../../shared/graces.js';
@@ -28,7 +48,9 @@ import {
 } from '../../shared/protocol.js';
 import {
   deriveStats,
+  DODGE_SECONDS,
   isInvulnerable,
+  JUMP_SECONDS,
   MAX_POTIONS,
   PLAYER_RADIUS,
   STAGGER_SECONDS,
@@ -1530,7 +1552,7 @@ describe('saving progress', () => {
     store.add('b', 1, { animals: 1, deaths: 1 });
     await store.flush();
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].params, [['a', 'b'], [1, 1], [5, 0], [1, 0], [0, 1], [0, 1]]);
+    assert.deepEqual(calls[0].params, [['a', 'b'], [1, 1], [5, 0], [1, 0], [0, 1], [0, 1], [0, 0], [0, 0]]);
     assert.ok(!calls[0].text.includes("'a'"), 'values only ever travel as parameters');
     await store.flush();
     assert.equal(calls.length, 1, 'already saved');
@@ -1867,5 +1889,1009 @@ describe('performance', () => {
     console.log(`world step without sockets: cpu ${cpuPerTick.toFixed(2)} ms per tick, p50 ${p50.toFixed(2)} ms, p99 ${p99.toFixed(2)} ms, max ${durations.at(-1)!.toFixed(2)} ms, awake ${awake}`);
     // Only a rough check, since other work on this machine shows up here too. server/loadtest.cjs is the real measure.
     assert.ok(cpuPerTick < 5, `${cpuPerTick.toFixed(2)} ms of CPU per tick`);
+  });
+});
+
+/* The Great Bull boss. Each case leaves one move off cooldown and skips the wake-up, so it sees exactly one move. */
+
+const BOSS_ENTRY = CREATURE_BY_ID.get('bull_boss')!;
+
+function bossFight(): { staged: Staged; boss: Creature } {
+  const staged = stage({ camps: [staged_camp('bull_boss')] });
+  const boss = staged.world.field.creatures[0];
+  staged.place(boss, 0, 0);
+  return { staged, boss };
+}
+
+/** Only this move can be picked. Any id outside the list leaves it with none. */
+function onlyMove(boss: Creature, id: number): void {
+  const { readyAt } = boss.boss!;
+  for (let index = 0; index < readyAt.length; index += 1) readyAt[index] = index === id ? 0 : Infinity;
+}
+
+/** As if it had just noticed this player, facing them. */
+function engage(boss: Creature, player: WorldPlayer): void {
+  boss.mode = Mode.Chase;
+  boss.target = player;
+  boss.boss!.engaged = true;
+  boss.yaw = Math.atan2(player.state.x - boss.x, player.state.z - boss.z);
+}
+
+function ticksOf(seconds: number): number {
+  return Math.round(seconds * TICK_RATE);
+}
+
+function untilTell(staged: Staged, limit = 10): Extract<GameEvent, { k: 'bossTell' }> {
+  for (let ticks = 0; ticks < limit; ticks += 1) {
+    const [tell] = ofKind(staged.tick(), 'bossTell');
+    if (tell) return tell;
+  }
+  throw new Error('the boss never began a move');
+}
+
+/** A roll that's in its safe frames and goes nowhere, so the player stays where the case put them. */
+function roll(player: WorldPlayer): void {
+  player.state.dodgeTime = DODGE_SECONDS;
+  player.state.dodgeX = 0;
+  player.state.dodgeZ = 0;
+}
+
+function jump(player: WorldPlayer): void {
+  player.state.jumpTime = JUMP_SECONDS / 2;
+}
+
+describe('the Great Bull boss', () => {
+  it('is in the kinds list at the end, four times a bull, and waits in the middle of its arena', () => {
+    assert.equal(BOSS_ENTRY.kind.behavior, 'boss');
+    assert.equal(BOSS_ENTRY.index, CREATURE_BY_ID.size - 1);
+    const staged = stage({ camps: [{ kind: 'bull_boss', x: OPEN.x, z: OPEN.z, count: 1, radius: 2 }] });
+    const [boss] = staged.world.field.creatures;
+    assert.ok(boss.boss, 'it gets boss state');
+    assert.deepEqual(staged.world.field.bosses, [boss]);
+    assert.ok(Math.hypot(boss.x - OPEN.x, boss.z - OPEN.z) < 0.01);
+    assert.equal(boss.mode, Mode.Sleep);
+    assert.equal(stage().world.field.bosses.length, 0, 'a map without its camp has no boss and nothing breaks');
+  });
+
+  it('wakes for a player in reach and tells its first move only after a pause', () => {
+    const { staged, boss } = bossFight();
+    const player = staged.join('duelist', 0);
+    staged.moveTo(player, 0, 5);
+    onlyMove(boss, BossMove.Swipe);
+    staged.tick(TICK_RATE);
+    assert.ok(boss.boss!.engaged, 'it noticed the player');
+    assert.equal(boss.target, player);
+    staged.tick(TICK_RATE);
+    assert.equal(ofKind(staged.events, 'bossTell').length, 1, 'it starts a move after the pause');
+  });
+
+  it('swipe: hits in front only at the end of its windup, and a roll or a step back avoids it', () => {
+    const { swipe } = BOSS_MOVES;
+    for (const dodge of ['none', 'roll', 'step'] as const) {
+      const { staged, boss } = bossFight();
+      const player = staged.join('duelist', 0);
+      staged.moveTo(player, 0, 4);
+      onlyMove(boss, BossMove.Swipe);
+      engage(boss, player);
+      const health = player.state.health;
+      const tell = untilTell(staged);
+      assert.equal(tell.m, BossMove.Swipe);
+      assert.equal(tell.c, boss.id);
+      assert.equal(tell.t, swipe.windupSeconds);
+      staged.tick(ticksOf(swipe.windupSeconds) - 1);
+      assert.equal(player.state.health, health, 'nothing lands during the windup');
+      assert.equal(ofKind(staged.events, 'bossHit').length, 0);
+      if (dodge === 'roll') roll(player);
+      if (dodge === 'step') staged.moveTo(player, 0, 12);
+      const events = staged.tick();
+      assert.equal(ofKind(events, 'bossHit').length, 1, `${dodge}: the hit comes exactly at the end of the windup`);
+      const hurt = ofKind(events, 'bossDmg');
+      if (dodge === 'none') {
+        assert.equal(hurt.length, 1);
+        assert.deepEqual(hurt[0], { k: 'bossDmg', c: boss.id, m: BossMove.Swipe, v: player.id, dmg: swipe.damage });
+        assert.equal(player.state.health, health - swipe.damage);
+        assert.equal(player.state.staggerTime, STAGGER_SECONDS, 'the same stagger as a bite');
+        assert.ok(Math.hypot(player.state.knockX, player.state.knockZ) > 0.99, 'and the same knockback');
+      } else {
+        assert.equal(hurt.length, 0, `${dodge} should avoid it`);
+        assert.equal(player.state.health, health);
+      }
+      assert.equal(boss.mode, Mode.Recover, 'then it stands still, open to hits');
+      assert.ok(Math.abs(boss.timer - swipe.recoverSeconds) < 1e-6);
+    }
+  });
+
+  it('tracks a player through the windup, then commits: an early sidestep is followed, a late one escapes', () => {
+    const { swipe } = BOSS_MOVES;
+    for (const late of [false, true]) {
+      const { staged, boss } = bossFight();
+      const player = staged.join('duelist', 0);
+      staged.moveTo(player, 0, 4);
+      onlyMove(boss, BossMove.Swipe);
+      engage(boss, player);
+      const tell = untilTell(staged);
+      const health = player.state.health;
+      const windupTicks = ticksOf(swipe.windupSeconds);
+      // 0.1 s before it commits, or 0.1 s after (it commits 0.35 s before the hit).
+      const waitTicks = late ? windupTicks - ticksOf(0.25) : windupTicks - ticksOf(0.75);
+      staged.tick(waitTicks);
+      // Out to its side, about 77 degrees off the aim it started with: outside the 120 degree swing.
+      staged.moveTo(player, 4.5, 1);
+      staged.tick(windupTicks - waitTicks + 1);
+      const hurt = ofKind(staged.events, 'bossDmg').length;
+      if (late) {
+        assert.equal(hurt, 0, 'a sidestep after it commits escapes');
+        assert.equal(player.state.health, health);
+      } else {
+        assert.ok(Math.abs(boss.yaw - tell.yaw) > 0.3, 'it turned to follow the player');
+        assert.equal(hurt, 1, 'an early sidestep is tracked and hit');
+      }
+    }
+  });
+
+  it('swipe: misses a player behind it once its facing has locked', () => {
+    const { staged, boss } = bossFight();
+    const player = staged.join('duelist', 0);
+    staged.moveTo(player, 0, 4);
+    onlyMove(boss, BossMove.Swipe);
+    engage(boss, player);
+    untilTell(staged);
+    staged.tick(ticksOf(BOSS_MOVES.swipe.windupSeconds) - 2);
+    staged.moveTo(player, 0, -4);
+    staged.tick(2);
+    assert.equal(ofKind(staged.events, 'bossHit').length, 1);
+    assert.equal(ofKind(staged.events, 'bossDmg').length, 0);
+  });
+
+  it('charge: runs the locked line after its windup and hits each player in the lane once', () => {
+    const { charge } = BOSS_MOVES;
+    const { staged, boss } = bossFight();
+    const player = staged.join('duelist', 0);
+    staged.moveTo(player, 0, 12);
+    onlyMove(boss, BossMove.Charge);
+    engage(boss, player);
+    const health = player.state.health;
+    assert.equal(untilTell(staged).m, BossMove.Charge);
+    staged.tick(ticksOf(charge.windupSeconds) - 1);
+    assert.equal(player.state.health, health, 'nothing lands during the windup');
+    assert.ok(Math.hypot(boss.x - OPEN.x, boss.z - OPEN.z) < 0.01, 'it stands still while winding up');
+    assert.equal(ofKind(staged.tick(), 'bossHit').length, 1, 'the run starts at the end of the windup');
+    let hurt: Array<Extract<GameEvent, { k: 'bossDmg' }>> = [];
+    for (let ticks = 0; ticks < TICK_RATE * 2 && hurt.length === 0; ticks += 1) hurt = ofKind(staged.tick(), 'bossDmg');
+    assert.equal(hurt.length, 1);
+    assert.equal(hurt[0].m, BossMove.Charge);
+    assert.equal(hurt[0].dmg, charge.damage);
+    assert.equal(player.state.health, health - charge.damage);
+    staged.tick(TICK_RATE * 2);
+    assert.equal(ofKind(staged.events, 'bossDmg').length, 1, 'once per charge');
+    assert.ok(boss.z - OPEN.z > 10, 'it ran down the lane');
+    assert.ok(boss.z - OPEN.z <= charge.length + 0.01, 'and no farther than its length');
+  });
+
+  it('charge: a sidestep after the facing locks makes it miss, and a miss leaves it dazed', () => {
+    const { charge } = BOSS_MOVES;
+    const { staged, boss } = bossFight();
+    const player = staged.join('duelist', 0);
+    staged.moveTo(player, 0, 12);
+    onlyMove(boss, BossMove.Charge);
+    engage(boss, player);
+    untilTell(staged);
+    staged.tick(ticksOf(charge.windupSeconds) - 2);
+    staged.moveTo(player, 8, 12);
+    staged.tick(2);
+    assert.equal(ofKind(staged.events, 'bossHit').length, 1);
+    let ticks = 0;
+    while (boss.mode === Mode.Strike && ticks < TICK_RATE * 3) {
+      staged.tick();
+      ticks += 1;
+    }
+    assert.equal(ofKind(staged.events, 'bossDmg').length, 0);
+    assert.equal(boss.mode, Mode.Recover);
+    assert.equal(boss.visual, CreatureState.Stagger, 'shown dazed');
+    assert.ok(boss.timer > charge.recoverSeconds, 'dazed for longer than a normal recovery');
+    let dazed = 0;
+    while (boss.mode === Mode.Recover && dazed < TICK_RATE * 5) {
+      staged.tick();
+      dazed += 1;
+    }
+    assert.ok(Math.abs(dazed - ticksOf(charge.missStunSeconds)) <= 1, `dazed for ${dazed / TICK_RATE} s`);
+  });
+
+  it('charge: a roll as it arrives lets it pass through', () => {
+    const { staged, boss } = bossFight();
+    const player = staged.join('duelist', 0);
+    staged.moveTo(player, 0, 12);
+    onlyMove(boss, BossMove.Charge);
+    engage(boss, player);
+    untilTell(staged);
+    staged.tick(ticksOf(BOSS_MOVES.charge.windupSeconds));
+    const limit = BOSS_MOVES.charge.width / 2 + PLAYER_RADIUS;
+    // Roll the tick before its lane reaches the player.
+    for (let ticks = 0; ticks < TICK_RATE * 2 && boss.mode === Mode.Strike; ticks += 1) {
+      if (player.state.z - boss.z - BOSS_MOVES.charge.speed / TICK_RATE <= limit && player.state.dodgeTime === 0) roll(player);
+      staged.tick();
+    }
+    assert.equal(ofKind(staged.events, 'bossDmg').length, 0);
+  });
+
+  it('leap: lands on where the target stood when it crouched, so moving away or jumping avoids it', () => {
+    const { leap } = BOSS_MOVES;
+    for (const dodge of ['none', 'away', 'jump', 'roll'] as const) {
+      const { staged, boss } = bossFight();
+      const player = staged.join('duelist', 0);
+      staged.moveTo(player, 0, 10);
+      onlyMove(boss, BossMove.Leap);
+      engage(boss, player);
+      const health = player.state.health;
+      const tell = untilTell(staged);
+      assert.equal(tell.m, BossMove.Leap);
+      assert.ok(Math.hypot(tell.tx - player.state.x, tell.tz - player.state.z) < 1.1, 'aimed at where the player stood');
+      if (dodge === 'away') staged.moveTo(player, 0, 20);
+      staged.tick(ticksOf(leap.windupSeconds) - 1);
+      assert.equal(player.state.health, health, 'nothing lands while it crouches and flies');
+      if (dodge === 'jump') jump(player);
+      if (dodge === 'roll') roll(player);
+      const events = staged.tick();
+      assert.equal(ofKind(events, 'bossHit').length, 1, `${dodge}: it lands at the end of the windup`);
+      assert.ok(Math.hypot(boss.x - tell.tx, boss.z - tell.tz) < 1.1, 'on the marked spot');
+      const hurt = ofKind(events, 'bossDmg');
+      if (dodge === 'none') {
+        assert.equal(hurt.length, 1);
+        assert.equal(hurt[0].m, BossMove.Leap);
+        assert.equal(player.state.health, health - leap.damage);
+      } else {
+        assert.equal(hurt.length, 0, `${dodge} should avoid it`);
+      }
+    }
+  });
+
+  it('fireballs: a fan of slow shots after the windup, the one in line hits, and a sidestep avoids them', () => {
+    const { fireballs } = BOSS_MOVES;
+    for (const dodge of ['none', 'step'] as const) {
+      const { staged, boss } = bossFight();
+      const player = staged.join('duelist', 0);
+      staged.moveTo(player, 0, 15);
+      onlyMove(boss, BossMove.Fireballs);
+      engage(boss, player);
+      const health = player.state.health;
+      assert.equal(untilTell(staged).m, BossMove.Fireballs);
+      staged.tick(ticksOf(fireballs.windupSeconds) - 1);
+      assert.equal(ofKind(staged.events, 'bossShot').length, 0, 'nothing flies during the windup');
+      const fired = staged.tick();
+      assert.equal(ofKind(fired, 'bossHit').length, 1);
+      const shots = ofKind(fired, 'bossShot');
+      assert.equal(shots.length, fireballs.count);
+      for (const shot of shots) {
+        assert.equal(shot.c, boss.id);
+        assert.equal(shot.speed, fireballs.speed);
+        assert.equal(shot.range, fireballs.range);
+        assert.equal(shot.r, fireballs.radius);
+      }
+      assert.equal(new Set(shots.map((shot) => shot.id)).size, fireballs.count, 'each has its own id');
+      assert.equal(player.state.health, health, 'they take time to arrive');
+      if (dodge === 'step') staged.moveTo(player, 9, 15);
+      staged.tick(ticksOf(fireballs.range / fireballs.speed) + 5);
+      const ends = ofKind(staged.events, 'bossShotEnd');
+      assert.equal(ends.length, fireballs.count, 'every shot ends');
+      assert.equal(staged.world.bossShots.length, 0);
+      const hits = ends.filter((end) => end.hit === 1);
+      const hurt = ofKind(staged.events, 'bossDmg');
+      if (dodge === 'none') {
+        assert.equal(hits.length, 1, 'only the middle one is in line');
+        assert.equal(hits[0].v, player.id);
+        assert.equal(hurt.length, 1);
+        assert.equal(hurt[0].m, BossMove.Fireballs);
+        assert.equal(player.state.health, health - fireballs.damage);
+      } else {
+        assert.equal(hits.length, 0);
+        assert.equal(hurt.length, 0);
+      }
+    }
+  });
+
+  it('fireballs: pass through a player in a roll', () => {
+    const { staged, boss } = bossFight();
+    const player = staged.join('duelist', 0);
+    staged.moveTo(player, 0, 15);
+    onlyMove(boss, BossMove.Fireballs);
+    engage(boss, player);
+    untilTell(staged);
+    staged.tick(ticksOf(BOSS_MOVES.fireballs.windupSeconds));
+    const reach = BOSS_MOVES.fireballs.radius + PLAYER_RADIUS + BOSS_MOVES.fireballs.speed / TICK_RATE;
+    for (let ticks = 0; ticks < TICK_RATE * 4 && staged.world.bossShots.length > 0; ticks += 1) {
+      const near = staged.world.bossShots.some((shot) => Math.hypot(shot.x - player.state.x, shot.z - player.state.z) <= reach);
+      // The player's turn runs before the shots move, so roll again if the safe frames end during this tick.
+      const safeNextTick = player.state.dodgeTime - 1 / TICK_RATE > DODGE_SECONDS - player.derived.dodgeInvulnerable;
+      if (near && !safeNextTick) roll(player);
+      staged.tick();
+    }
+    assert.equal(ofKind(staged.events, 'bossDmg').length, 0);
+  });
+
+  it('stomp: only below half health, then a ring that a jump or a roll lets pass and anyone else takes', () => {
+    const { stomp } = BOSS_MOVES;
+    const { staged, boss } = bossFight();
+    const standing = staged.join('duelist', 0);
+    const jumper = staged.join('duelist', 0);
+    const roller = staged.join('duelist', 0);
+    staged.moveTo(standing, 0, 5);
+    staged.moveTo(jumper, 8, 0);
+    staged.moveTo(roller, -8, 0);
+    onlyMove(boss, BossMove.Stomp);
+    engage(boss, standing);
+    boss.health = boss.kind.health * 0.6;
+    staged.tick(TICK_RATE * 2);
+    assert.equal(ofKind(staged.events, 'bossTell').length, 0, 'not above half health');
+
+    boss.health = boss.kind.health * stomp.belowHealthShare;
+    staged.place(boss, 0, 0);
+    staged.moveTo(standing, 0, 5);
+    engage(boss, standing);
+    assert.equal(untilTell(staged).m, BossMove.Stomp);
+    staged.tick(ticksOf(stomp.windupSeconds) - 1);
+    assert.equal(ofKind(staged.events, 'bossDmg').length, 0, 'nothing during the windup');
+    assert.equal(ofKind(staged.tick(), 'bossHit').length, 1);
+    const ring = boss.boss!;
+    const reachAt = 8 - PLAYER_RADIUS;
+    let dodged = false;
+    for (let ticks = 0; ticks < TICK_RATE * 3 && ring.ringActive; ticks += 1) {
+      if (!dodged && ring.ringRadius + stomp.ringSpeed / TICK_RATE >= reachAt) {
+        jump(jumper);
+        roll(roller);
+        dodged = true;
+      }
+      staged.tick();
+    }
+    assert.ok(dodged && !ring.ringActive, 'the ring grew out to its full size');
+    const hurt = ofKind(staged.events, 'bossDmg');
+    assert.deepEqual(hurt.map((item) => item.v), [standing.id], 'only the one standing still is hit, once');
+    assert.equal(hurt[0].m, BossMove.Stomp);
+    assert.equal(hurt[0].dmg, stomp.damage);
+  });
+
+  it('never uses one move three times running', () => {
+    const { staged, boss } = bossFight();
+    const player = staged.join('duelist', 0);
+    staged.moveTo(player, 0, 4);
+    engage(boss, player);
+    // Swipe has no cooldown here, and nothing else fits at this distance.
+    onlyMove(boss, BossMove.Swipe);
+    const moves: number[] = [];
+    for (let ticks = 0; ticks < TICK_RATE * 30 && moves.length < 6; ticks += 1) {
+      boss.boss!.readyAt[BossMove.Swipe] = 0;
+      for (const tell of ofKind(staged.tick(), 'bossTell')) moves.push(tell.m);
+      player.state.health = player.derived.maxHealth;
+    }
+    assert.deepEqual(moves.slice(0, 2), [BossMove.Swipe, BossMove.Swipe]);
+    assert.equal(moves.length, 2, 'with only that move left, it waits rather than use it a third time');
+  });
+
+  it('gives up after 6 seconds with nobody in its arena: goes home, heals to full and forgets who hit it', () => {
+    const { staged, boss } = bossFight();
+    const player = staged.join('duelist', 0);
+    const far = staged.join('duelist', 0);
+    staged.moveTo(player, 0, 15);
+    staged.moveTo(far, 0, -55);
+    onlyMove(boss, -1);
+    engage(boss, player);
+    boss.health = 400;
+    boss.hitters.set(player, staged.world.time);
+    staged.tick();
+    assert.ok(snapshotText(staged, player).includes(`"b":[${boss.id},${BOSS_ENTRY.index},400,${boss.kind.health},0,0]`), 'the health bar nearby');
+    assert.ok(!snapshotText(staged, far).includes('"b":'), 'and not far away');
+
+    staged.moveTo(player, 0, 45);
+    staged.tick(ticksOf(6) - 2);
+    assert.equal(boss.health, 400, 'it waits a while first');
+    assert.ok(boss.boss!.engaged);
+    // Off its spot, so the walk home can be seen (at home it goes straight to Idle).
+    staged.place(boss, 0, 8);
+    staged.tick(4);
+    assert.equal(boss.mode, Mode.Return);
+    assert.equal(boss.health, boss.kind.health, 'healed to full');
+    assert.equal(boss.hitters.size, 0, 'loot credit is forgotten');
+    assert.ok(!boss.boss!.engaged);
+    staged.moveTo(player, 0, 35);
+    assert.ok(!snapshotText(staged, player).includes('"b":'), 'no bar once it has given up');
+    staged.tick(TICK_RATE * 15);
+    assert.equal(boss.mode, Mode.Idle);
+    assert.ok(Math.hypot(boss.x - OPEN.x, boss.z - OPEN.z) <= 1.5, 'back home');
+  });
+
+  it('gives everyone who hit it in the last minute their own roll, a boss kill and the achievement', () => {
+    const { staged, boss } = bossFight();
+    const killer = staged.join('juggernaut', 0);
+    const helper = staged.join('duelist', 0);
+    const late = staged.join('duelist', 0);
+    staged.moveTo(helper, 30, 0);
+    staged.moveTo(late, -30, 0);
+    staged.place(boss, 0, 3.5);
+    // Standing still the whole time, so the swing is all that happens.
+    onlyMove(boss, -1);
+    boss.mode = Mode.Recover;
+    boss.timer = 100;
+    boss.health = 1;
+    boss.hitters.set(helper, staged.world.time - 50);
+    boss.hitters.set(late, staged.world.time - 61);
+
+    const { events } = swingUntilHit(staged, killer);
+    assert.equal(ofKind(events, 'hit')[0].kill, 1);
+    const dust = ofKind(events, 'dust');
+    assert.deepEqual(dust.map((item) => item.to).sort(), [killer.id, helper.id].sort());
+    for (const item of dust) assert.equal(item.n, BOSS_ENTRY.kind.dustMin, 'each gets a full amount');
+    assert.equal(late.dust, 0);
+    assert.equal(killer.enemies, 1);
+    assert.equal(helper.enemies, 1);
+    const kills = staged.credits.filter((item) => item.delta.bossKills === 1);
+    assert.deepEqual(new Set(kills.map((item) => item.player)), new Set([killer, helper]));
+    for (const item of kills) assert.deepEqual(item.delta, { dust: BOSS_ENTRY.kind.dustMin, enemies: 1, animals: 0, bossKills: 1 });
+    const damage = staged.credits.filter((item) => item.delta.bossDamage !== undefined);
+    assert.deepEqual(damage.map((item) => [item.player, item.delta.bossDamage]), [[killer, 1]], 'only the health it really lost');
+    assert.equal(staged.unlocks.filter((id) => id === 'bull_slayer').length, 2);
+    assert.equal(boss.mode, Mode.Dead);
+    assert.ok(!snapshotText(staged, killer).includes('"b":'), 'no bar for a dead boss');
+  });
+
+  it('comes back after its respawn time, full and asleep in the middle of its arena', () => {
+    const { staged, boss } = bossFight();
+    staged.join('duelist', 0);
+    staged.world.field.onDeath(boss);
+    staged.tick(ticksOf(BOSS_ENTRY.kind.respawnSeconds) + 2);
+    assert.ok(boss.alive);
+    assert.equal(boss.health, boss.kind.health);
+    assert.ok(Math.hypot(boss.x - OPEN.x, boss.z - OPEN.z) < 1.5);
+  });
+
+  it('runs on its own clock: nothing a client sends can start, pick, speed up or skip a move', () => {
+    for (const forged of [
+      { t: 'boss', m: BossMove.Leap },
+      { t: 'bossTell', c: 1, m: BossMove.Stomp },
+      { t: 'bossHit', c: 1, m: 0 },
+      { t: 'stomp' },
+      { k: 'bossDmg', c: 1, v: 1, dmg: 0 },
+    ]) {
+      assert.equal(parseAction(JSON.stringify(forged)), null);
+      assert.equal(parseInput(JSON.stringify(forged)), null);
+    }
+    assert.deepEqual(parseAction(JSON.stringify({ t: 'aim', c: 1, m: BossMove.Leap, skip: true })), { t: 'aim', c: 1 });
+
+    const timeline = (noisy: boolean): string[] => {
+      const { staged, boss } = bossFight();
+      const player = staged.join('duelist', 0);
+      staged.moveTo(player, 0, 4);
+      onlyMove(boss, BossMove.Swipe);
+      engage(boss, player);
+      const seen: string[] = [];
+      // Long enough for one whole move, before knockback timing could make the two worlds drift apart.
+      for (let ticks = 0; ticks < TICK_RATE * 2; ticks += 1) {
+        if (noisy) {
+          staged.world.queueInput(player, input({ interact: true, potion: true }));
+          staged.world.handleAction(player, parseAction(JSON.stringify({ t: 'aim', c: boss.id }))!);
+          staged.world.handleAction(player, { t: 'stand' });
+        }
+        for (const event of staged.tick()) {
+          if (event.k === 'bossTell' || event.k === 'bossHit') seen.push(`${ticks}:${event.k}:${event.m}`);
+        }
+      }
+      return seen;
+    };
+    const quiet = timeline(false);
+    assert.ok(quiet.some((entry) => entry.includes('bossHit')));
+    assert.deepEqual(timeline(true), quiet);
+  });
+});
+
+/* Stance breaks and criticals. Every case stages the boss standing still with no moves, so only these rules run. */
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
+
+/** One-per-tick steps from the start of a critical to its impact, and to its end. The first step starts it. */
+function criticalSteps(until: number): number {
+  let time = CRITICAL_SECONDS;
+  let steps = 0;
+  while (time > until) {
+    time = Math.max(0, time - 1 / TICK_RATE);
+    steps += 1;
+  }
+  return steps;
+}
+const IMPACT_STEP = criticalSteps(CRITICAL_IMPACT_TIME);
+const END_STEP = criticalSteps(0);
+
+/** A boss at the open spot facing +z, with no moves and holding still. */
+function quietBoss(): { staged: Staged; boss: Creature } {
+  const fight = bossFight();
+  onlyMove(fight.boss, -1);
+  fight.boss.yaw = 0;
+  fight.boss.mode = Mode.Recover;
+  fight.boss.timer = 100;
+  fight.boss.boss!.engaged = true;
+  return fight;
+}
+
+/** A player in the boss's window, knocked down boss, the player's critical under way after one step. */
+function startCritical(classId: ClassId, variant: number): { staged: Staged; boss: Creature; player: WorldPlayer; events: GameEvent[] } {
+  const { staged, boss } = quietBoss();
+  const player = staged.join(classId, variant);
+  staged.moveTo(player, 0, 4);
+  staged.world.field.breakStance(boss);
+  staged.world.queueInput(player, input({ attack: true, yaw: 0 }));
+  const events = staged.tick();
+  assert.equal(ofKind(events, 'crit').length, 1, 'the critical started');
+  return { staged, boss, player, events };
+}
+
+/** Ticks with an idle input each tick, so the player steps once per tick. A NaN yaw leaves the facing alone. */
+function idle(staged: Staged, player: WorldPlayer, ticks: number): GameEvent[] {
+  const events: GameEvent[] = [];
+  for (let index = 0; index < ticks; index += 1) {
+    staged.world.queueInput(player, input({ yaw: Number.NaN }));
+    events.push(...staged.tick());
+  }
+  return events;
+}
+
+type Hurts = { hurt(creature: Creature, player: WorldPlayer, damage: number, fromX: number, fromZ: number, move: number): boolean };
+
+const isClear = (x: number, z: number, radius = PLAYER_RADIUS): boolean => {
+  const probe = { x, z };
+  collide(probe, radius);
+  return probe.x === x && probe.z === z;
+};
+
+/** A small round collider on the real map and a direction that fits the case, or null if the map has none. */
+function roundWall(fits: (x: number, z: number, r: number, dx: number, dz: number) => boolean) {
+  for (const collider of MAP.colliders) {
+    if (collider.t !== 'c' || collider.r < 0.5 || collider.r > 1.6) continue;
+    for (let index = 0; index < 8; index += 1) {
+      const angle = (index * Math.PI) / 4;
+      const dx = Math.sin(angle);
+      const dz = Math.cos(angle);
+      if (fits(collider.x, collider.z, collider.r, dx, dz)) return { x: collider.x, z: collider.z, r: collider.r, dx, dz };
+    }
+  }
+  return null;
+}
+
+describe('boss stance and criticals', () => {
+  it("fills by each hit's stagger power, breaks at max in place of a stagger, then rises and is immune for a while", () => {
+    const { staged, boss } = quietBoss();
+    const b = boss.boss!;
+    const player = staged.join('juggernaut', 0);
+    staged.place(boss, 0, 3.5);
+    const rest = () => {
+      staged.tick(TICK_RATE * 2);
+      player.state.stamina = player.derived.maxStamina;
+      if (!b.stunned) {
+        boss.mode = Mode.Recover;
+        boss.timer = 100;
+      }
+    };
+
+    swingUntilHit(staged, player);
+    assert.equal(player.stagger, staggerPower(player.weapon, player.info.stats));
+    assert.equal(b.stance, player.stagger, 'one hit adds its stagger power');
+    rest();
+
+    b.stance = BOSS_STANCE.max - 1;
+    b.stanceHitAt = staged.world.time;
+    boss.poise = boss.kind.poise;
+    boss.lastPoiseHit = staged.world.time;
+    const { events } = swingUntilHit(staged, player);
+    const hitAt = events.findIndex((event) => event.k === 'hit');
+    const breakAt = events.findIndex((event) => event.k === 'bossBreak');
+    assert.ok(hitAt >= 0 && breakAt > hitAt, 'the hit, then the break');
+    assert.equal(ofKind(events, 'hit')[0].stagger, 0, 'the usual poise stagger does not also happen');
+    assert.deepEqual(ofKind(events, 'bossBreak'), [{ k: 'bossBreak', c: boss.id, x: round2(boss.x), z: round2(boss.z) }]);
+    assert.ok(b.stunned);
+    assert.equal(boss.mode, Mode.Stagger);
+    assert.ok(Math.abs(boss.timer - (BOSS_STANCE.stunSeconds - 1 / TICK_RATE)) < 1e-6);
+    assert.ok(
+      snapshotText(staged, player).includes(
+        `"b":[${boss.id},${BOSS_ENTRY.index},${Math.ceil(boss.health)},${boss.kind.health},${packStance(b.stance)},${packStunLeft(boss.timer)}]`,
+      ),
+      'the bar carries stance and stun time',
+    );
+
+    rest();
+    const health = boss.health;
+    const { events: downHit } = swingUntilHit(staged, player);
+    assert.equal(boss.health, health - player.damage, 'normal damage while down');
+    assert.equal(ofKind(downHit, 'hit')[0].stagger, 0);
+    assert.equal(b.stance, 0, 'no stance while down');
+    assert.equal(boss.mode, Mode.Stagger);
+
+    let rise = -1;
+    for (let ticks = 0; ticks < ticksOf(BOSS_STANCE.stunSeconds) + 5 && rise < 0; ticks += 1) {
+      if (ofKind(staged.tick(), 'bossRise').length > 0) rise = ticks;
+    }
+    assert.ok(rise >= 0, 'it gets up on its own');
+    assert.ok(!b.stunned);
+    assert.equal(boss.mode, Mode.Recover);
+    assert.ok(Math.abs(boss.timer - 1) < 1e-6, 'and stands still for a second');
+    assert.equal(b.immuneLeft, BOSS_STANCE.immuneSeconds);
+
+    rest();
+    swingUntilHit(staged, player);
+    assert.equal(b.stance, 0, 'immune: hits add no stance');
+    b.immuneLeft = 0;
+    rest();
+    swingUntilHit(staged, player);
+    assert.equal(b.stance, player.stagger, 'it builds again once immunity is over');
+  });
+
+  it('decays after a few quiet seconds', () => {
+    const { staged, boss } = quietBoss();
+    staged.join('duelist', 0);
+    const b = boss.boss!;
+    b.stance = 100;
+    b.stanceHitAt = staged.world.time;
+    staged.tick(ticksOf(BOSS_STANCE.decayDelaySeconds) - 1);
+    assert.equal(b.stance, 100, 'nothing lost before the delay');
+    staged.tick(TICK_RATE + 1);
+    assert.ok(b.stance < 100 - BOSS_STANCE.decayPerSecond * 0.9 && b.stance > 100 - BOSS_STANCE.decayPerSecond * 1.2, `${b.stance}`);
+    staged.tick(TICK_RATE * 20);
+    assert.equal(b.stance, 0, 'down to nothing, and no lower');
+  });
+
+  it('cuts off a charge and a leap in the air at once, along with a stomp ring', () => {
+    {
+      const { staged, boss } = bossFight();
+      const player = staged.join('duelist', 0);
+      staged.moveTo(player, 0, 15);
+      onlyMove(boss, BossMove.Charge);
+      engage(boss, player);
+      untilTell(staged);
+      staged.tick(ticksOf(BOSS_MOVES.charge.windupSeconds) + 3);
+      assert.equal(boss.mode, Mode.Strike, 'charging');
+      boss.boss!.ringActive = true;
+      staged.world.field.breakStance(boss);
+      assert.equal(boss.mode, Mode.Stagger);
+      assert.equal(boss.boss!.move, -1);
+      assert.ok(!boss.boss!.ringActive, 'the ring is gone too');
+      const x = boss.x;
+      const z = boss.z;
+      staged.tick(TICK_RATE * 2);
+      assert.equal(boss.x, x);
+      assert.equal(boss.z, z, 'it stopped where it broke');
+      assert.equal(ofKind(staged.events, 'bossDmg').length, 0);
+    }
+    {
+      const { leap } = BOSS_MOVES;
+      const { staged, boss } = bossFight();
+      const player = staged.join('duelist', 0);
+      staged.moveTo(player, 0, 12);
+      onlyMove(boss, BossMove.Leap);
+      engage(boss, player);
+      untilTell(staged);
+      staged.tick(ticksOf(leap.windupSeconds - leap.airSeconds / 2));
+      assert.ok(boss.z - OPEN.z > 1, 'in the air');
+      const hits = ofKind(staged.events, 'bossHit').length;
+      staged.world.field.breakStance(boss);
+      const x = boss.x;
+      const z = boss.z;
+      staged.tick(TICK_RATE * 2);
+      assert.equal(ofKind(staged.events, 'bossHit').length, hits, 'it never lands the leap');
+      assert.equal(ofKind(staged.events, 'bossDmg').length, 0);
+      assert.equal(boss.x, x);
+      assert.equal(boss.z, z);
+      assert.equal(boss.mode, Mode.Stagger);
+    }
+  });
+
+  it('starts a critical only on a stunned boss, from its front window, for one player at a time', () => {
+    const { staged, boss } = quietBoss();
+    const b = boss.boss!;
+    const front = staged.join('juggernaut', 2);
+    const behind = staged.join('duelist', 0);
+    const far = staged.join('duelist', 0);
+    const second = staged.join('ranger', 2);
+    staged.moveTo(front, 0, 4);
+    staged.moveTo(behind, 0, -4);
+    staged.moveTo(far, 0, BOSS_STANCE.critWindowRange + 1);
+    staged.moveTo(second, 2, 3.5);
+    assert.ok(inCritWindow(boss.x, boss.z, boss.yaw, front.state.x, front.state.z));
+    assert.ok(!inCritWindow(boss.x, boss.z, boss.yaw, behind.state.x, behind.state.z));
+    assert.ok(!inCritWindow(boss.x, boss.z, boss.yaw, far.state.x, far.state.z));
+    const everyone = [front, behind, far, second];
+    const attack = (players: WorldPlayer[]): GameEvent[] => {
+      for (const player of players) staged.world.queueInput(player, input({ attack: true, yaw: Math.PI }));
+      const events = staged.tick();
+      for (const player of players) {
+        if (player.state.criticalTime > 0) continue;
+        player.state.attackTime = 0;
+        player.state.stamina = player.derived.maxStamina;
+      }
+      return events;
+    };
+
+    assert.equal(ofKind(attack(everyone), 'crit').length, 0, 'not while it stands');
+    for (const player of everyone) assert.equal(player.state.criticalTime, 0);
+
+    staged.world.field.breakStance(boss);
+    for (const player of [behind, far]) {
+      staged.world.queueInput(player, input({ attack: true, yaw: Math.PI }));
+    }
+    const missed = staged.tick();
+    assert.equal(ofKind(missed, 'crit').length, 0, 'not from behind or out of range');
+    assert.ok(behind.state.attackTime > 0 && far.state.attackTime > 0, 'they swing normally instead');
+    behind.state.attackTime = 0;
+    far.state.attackTime = 0;
+
+    const stamina = front.state.stamina;
+    const events = attack([front, second]);
+    assert.deepEqual(ofKind(events, 'crit'), [
+      {
+        k: 'crit',
+        by: front.id,
+        c: boss.id,
+        x: round2(front.state.x),
+        z: round2(front.state.z),
+        yaw: round2(Math.PI),
+        w: 2,
+        cls: CLASSES.findIndex((item) => item.id === 'juggernaut'),
+      },
+    ]);
+    assert.ok(Math.abs(front.state.criticalTime - (CRITICAL_SECONDS - 1 / TICK_RATE)) < 1e-9);
+    assert.ok(Math.abs(front.state.yaw - Math.PI) < 1e-9, 'turned to face the boss');
+    assert.equal(front.state.stamina, stamina, 'it costs nothing');
+    assert.equal(second.state.criticalTime, 0, 'one at a time');
+    assert.equal(b.critBy, front);
+
+    // Gone halfway through: the claim is freed and the stun carries on, so someone else can still take it.
+    staged.world.removePlayer(front);
+    staged.tick();
+    assert.equal(b.critBy, null);
+    assert.ok(b.stunned);
+    assert.equal(ofKind(attack([second]), 'crit').length, 1);
+    assert.equal(b.critBy, second);
+  });
+
+  it('needs a clear line to the boss', (t) => {
+    const wall = roundWall((x, z, r, dx, dz) => {
+      const px = x - dx * (r + 1);
+      const pz = z - dz * (r + 1);
+      const bx = x + dx * (r + 0.3);
+      const bz = z + dz * (r + 0.3);
+      return isClear(px, pz) && isClear(bx, bz, 0.05) && segmentBlocked(px, pz, bx, bz);
+    });
+    if (!wall) {
+      t.skip('this map has no small round collider to stand behind');
+      return;
+    }
+    const { staged, boss } = quietBoss();
+    const player = staged.join('duelist', 0);
+    staged.world.field.breakStance(boss);
+    player.state.x = wall.x - wall.dx * (wall.r + 1);
+    player.state.z = wall.z - wall.dz * (wall.r + 1);
+    boss.x = wall.x + wall.dx * (wall.r + 0.3);
+    boss.z = wall.z + wall.dz * (wall.r + 0.3);
+    boss.yaw = Math.atan2(-wall.dx, -wall.dz);
+    assert.ok(inCritWindow(boss.x, boss.z, boss.yaw, player.state.x, player.state.z));
+    staged.world.queueInput(player, input({ attack: true, yaw: Math.atan2(wall.dx, wall.dz) }));
+    assert.equal(ofKind(staged.tick(), 'crit').length, 0);
+    assert.equal(player.state.criticalTime, 0);
+  });
+
+  it('lands once at 60% for six times the attack, keeps the boss down meanwhile, and the player is untouchable', () => {
+    const { staged, boss } = quietBoss();
+    const b = boss.boss!;
+    const player = staged.join('juggernaut', 2);
+    staged.moveTo(player, 0, 4);
+    staged.world.field.breakStance(boss);
+    boss.timer = 0.5;
+    const world = staged.world as unknown as Hurts;
+    const health = boss.health;
+    const expected = criticalDamage(player.weapon, player.info.stats);
+    assert.equal(expected, attackDamage(player.weapon, player.info.stats) * CRITICAL_DAMAGE_MULTIPLIER);
+    let impactAt = -1;
+    for (let step = 1; step <= END_STEP; step += 1) {
+      // Inputs during a critical are ignored, whatever they ask.
+      staged.world.queueInput(player, input({ attack: true, yaw: 0, mx: 1, run: true }));
+      const events = staged.tick();
+      const hits = ofKind(events, 'critHit');
+      if (hits.length > 0) {
+        assert.equal(impactAt, -1, 'only once');
+        impactAt = step;
+        assert.deepEqual(hits, [{ k: 'critHit', by: player.id, c: boss.id, x: round2(boss.x), z: round2(boss.z), dmg: expected, kill: 0 }]);
+        assert.equal(boss.health, health - expected);
+      }
+      if (step < END_STEP) {
+        assert.ok(player.state.criticalTime > 0);
+        assert.ok(isInvulnerable(player.state, player.derived));
+        for (const move of [-1, BossMove.Swipe, BossMove.Charge, BossMove.Leap, BossMove.Fireballs, BossMove.Stomp]) {
+          assert.equal(world.hurt(boss, player, 50, boss.x, boss.z, move), false, 'bites and boss moves pass through');
+        }
+        assert.ok(Math.abs(player.state.yaw - Math.PI) < 1e-9, 'facing stays locked');
+        assert.ok(b.stunned && ofKind(events, 'bossRise').length === 0, 'it can not get up mid-critical');
+      } else {
+        assert.equal(player.state.criticalTime, 0);
+        assert.equal(player.critTarget, null);
+        assert.equal(ofKind(events, 'bossRise').length, 1, 'it gets up as the critical ends');
+      }
+    }
+    assert.equal(impactAt, IMPACT_STEP);
+    assert.equal(player.state.health, player.derived.maxHealth);
+    assert.ok(boss.hitters.has(player), 'loot credit');
+    assert.ok(staged.credits.some((item) => item.player === player && item.delta.bossDamage === Math.round(expected)));
+    assert.ok(!b.stunned);
+    assert.equal(b.critBy, null);
+    assert.equal(boss.mode, Mode.Recover);
+    assert.ok(Math.abs(boss.timer - BOSS_STANCE.afterCritRecoverSeconds) < 1e-6);
+    assert.equal(b.immuneLeft, BOSS_STANCE.immuneSeconds);
+
+    staged.world.queueInput(player, input({ attack: true, yaw: Math.PI }));
+    assert.equal(ofKind(staged.tick(), 'crit').length, 0, 'no second critical once it is up');
+  });
+
+  it('can finish the boss, which pays out like any kill', () => {
+    const { staged, boss, player } = startCritical('duelist', 1);
+    boss.health = 1;
+    idle(staged, player, IMPACT_STEP - 1);
+    const [hit] = ofKind(staged.events, 'critHit');
+    assert.equal(hit.kill, 1);
+    assert.equal(boss.mode, Mode.Dead);
+    assert.ok(staged.credits.some((item) => item.player === player && item.delta.bossKills === 1));
+    assert.ok(staged.unlocks.includes('bull_slayer'));
+  });
+
+  it("ends with the weapon's travel through collide(), and the server moves the player no further", () => {
+    const katana = startCritical('duelist', 0);
+    const { state } = katana.player;
+    const start = { x: state.x, z: state.z };
+    idle(katana.staged, katana.player, END_STEP - 2);
+    assert.equal(state.x, start.x);
+    assert.equal(state.z, start.z, 'it stays put while the critical plays');
+    idle(katana.staged, katana.player, 2);
+    const travel = katana.player.weapon.criticalTravel!;
+    assert.equal(travel, 9);
+    const end = { x: start.x + Math.sin(state.yaw) * travel, z: start.z + Math.cos(state.yaw) * travel };
+    collide(end, PLAYER_RADIUS);
+    assert.ok(Math.abs(state.x - end.x) < 1e-9 && Math.abs(state.z - end.z) < 1e-9, 'right through the boss');
+    idle(katana.staged, katana.player, TICK_RATE);
+    assert.ok(Math.abs(state.x - end.x) < 1e-9 && Math.abs(state.z - end.z) < 1e-9, 'and no more after');
+
+    const hammer = startCritical('juggernaut', 0);
+    const before = { x: hammer.player.state.x, z: hammer.player.state.z };
+    idle(hammer.staged, hammer.player, END_STEP + 2);
+    assert.deepEqual({ x: hammer.player.state.x, z: hammer.player.state.z }, before, 'a weapon with no travel stays put');
+  });
+
+  it('stops the travel at a wall', (t) => {
+    const travel = weaponFor('duelist', 0).criticalTravel!;
+    const wall = roundWall((x, z, r, dx, dz) => {
+      const px = x - dx * (r * 0.5 + travel);
+      const pz = z - dz * (r * 0.5 + travel);
+      return isClear(px, pz) && isClear(px + dx * 3, pz + dz * 3, 1) && !segmentBlocked(px, pz, px + dx * 3, pz + dz * 3);
+    });
+    if (!wall) {
+      t.skip('this map has no small round collider in the open');
+      return;
+    }
+    const { staged, boss } = quietBoss();
+    const player = staged.join('duelist', 0);
+    staged.world.field.breakStance(boss);
+    const px = wall.x - wall.dx * (wall.r * 0.5 + travel);
+    const pz = wall.z - wall.dz * (wall.r * 0.5 + travel);
+    player.state.x = px;
+    player.state.z = pz;
+    boss.x = px + wall.dx * 3;
+    boss.z = pz + wall.dz * 3;
+    boss.yaw = Math.atan2(-wall.dx, -wall.dz);
+    staged.world.queueInput(player, input({ attack: true }));
+    assert.equal(ofKind(staged.tick(), 'crit').length, 1);
+    const yaw = player.state.yaw;
+    idle(staged, player, END_STEP);
+    const end = { x: px + Math.sin(yaw) * travel, z: pz + Math.cos(yaw) * travel };
+    assert.ok(Math.hypot(end.x - wall.x, end.z - wall.z) < wall.r, 'the dash alone would end inside the collider');
+    assert.ok(Math.hypot(player.state.x - wall.x, player.state.z - wall.z) >= wall.r + PLAYER_RADIUS - 1e-6, 'pushed out of it');
+    const along = (player.state.x - wall.x) * Math.sin(yaw) + (player.state.z - wall.z) * Math.cos(yaw);
+    assert.ok(along < 0, 'it stops on the near side, short of the collider');
+  });
+
+  it('does not dash through a small collider in its path', (t) => {
+    const travel = weaponFor('duelist', 0).criticalTravel!;
+    // The collider sits halfway along the dash, with open ground on both sides of it.
+    const wall = roundWall((x, z, r, dx, dz) => {
+      const px = x - dx * (travel / 2);
+      const pz = z - dz * (travel / 2);
+      const ex = x + dx * (travel / 2);
+      const ez = z + dz * (travel / 2);
+      return (
+        travel / 2 > r + PLAYER_RADIUS + 0.5 &&
+        isClear(px, pz) &&
+        isClear(ex, ez) &&
+        isClear(px + dx * 3, pz + dz * 3, 1) &&
+        !segmentBlocked(px, pz, px + dx * 3, pz + dz * 3)
+      );
+    });
+    if (!wall) {
+      t.skip('this map has no small round collider with open ground around it');
+      return;
+    }
+    const { staged, boss } = quietBoss();
+    const player = staged.join('duelist', 0);
+    staged.world.field.breakStance(boss);
+    const px = wall.x - wall.dx * (travel / 2);
+    const pz = wall.z - wall.dz * (travel / 2);
+    player.state.x = px;
+    player.state.z = pz;
+    boss.x = px + wall.dx * 3;
+    boss.z = pz + wall.dz * 3;
+    boss.yaw = Math.atan2(-wall.dx, -wall.dz);
+    staged.world.queueInput(player, input({ attack: true }));
+    assert.equal(ofKind(staged.tick(), 'crit').length, 1);
+    const yaw = player.state.yaw;
+    const end = { x: px + Math.sin(yaw) * travel, z: pz + Math.cos(yaw) * travel };
+    assert.ok(isClear(end.x, end.z), 'one jump would land clear on the far side');
+    idle(staged, player, END_STEP);
+    const along = (player.state.x - wall.x) * Math.sin(yaw) + (player.state.z - wall.z) * Math.cos(yaw);
+    assert.ok(along < 0, 'it stays on the near side of the collider');
+  });
+
+  it('gives one critical per break, even if its player leaves after the blow', () => {
+    const { staged, boss, player } = startCritical('juggernaut', 0);
+    const b = boss.boss!;
+    const second = staged.join('juggernaut', 0);
+    staged.moveTo(second, 1, 3.5);
+    const hits = idle(staged, player, IMPACT_STEP);
+    assert.equal(ofKind(hits, 'critHit').length, 1, 'the first blow landed');
+    assert.ok(b.stunned);
+    staged.world.removePlayer(player);
+    const health = boss.health;
+    const events: GameEvent[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      staged.world.queueInput(second, input({ attack: true, yaw: Math.PI }));
+      events.push(...staged.tick());
+      second.state.attackTime = 0;
+      second.state.stamina = second.derived.maxStamina;
+    }
+    assert.equal(ofKind(events, 'crit').length, 0, 'no second critical');
+    assert.equal(second.state.criticalTime, 0);
+    assert.ok(!b.stunned, 'it gets up as if the critical had ended');
+    assert.ok(boss.health >= health - second.damage * 10, 'only ordinary hits at most');
+  });
+
+  it('ends a critical if its player dies during it', () => {
+    const { staged, player } = startCritical('juggernaut', 0);
+    (staged.world as unknown as { kill(p: WorldPlayer): void }).kill(player);
+    assert.equal(player.state.criticalTime, 0);
+    assert.equal(player.critTarget, null);
+  });
+
+  it('can not be started or faked by anything a client sends', () => {
+    for (const forged of [
+      { t: 'crit', c: 1 },
+      { t: 'critical' },
+      { t: 'bossBreak', c: 1 },
+      { k: 'crit', by: 1, c: 1, x: 0, z: 0, yaw: 0, w: 0, cls: 0 },
+      { k: 'critHit', by: 1, c: 1, x: 0, z: 0, dmg: 9999, kill: 1 },
+      { t: 'i', d: [1, 0, 0, 0, MAX_FLAGS + 1] },
+      { t: 'i', d: [1, 0, 0, 0, FLAG_ATTACK, CRITICAL_SECONDS] },
+    ]) {
+      assert.equal(parseAction(JSON.stringify(forged)), null);
+      assert.equal(parseInput(JSON.stringify(forged)), null);
+    }
+    const extra = parseInput(JSON.stringify({ t: 'i', d: [1, 0, 0, 0, FLAG_ATTACK], criticalTime: CRITICAL_SECONDS, crit: 1 }));
+    assert.ok(extra && !('criticalTime' in extra) && !('crit' in extra), 'unknown fields are dropped');
+    assert.deepEqual(parseAction(JSON.stringify({ t: 'aim', c: 1, crit: true })), { t: 'aim', c: 1 });
+
+    // Every flag combination, aimed at the boss, from just outside its window.
+    const { staged, boss } = quietBoss();
+    const player = staged.join('ranger', 0);
+    staged.moveTo(player, 0, BOSS_STANCE.critWindowRange + 0.5);
+    staged.world.field.breakStance(boss);
+    for (let flags = 0; flags <= MAX_FLAGS; flags += 1) {
+      staged.world.handleAction(player, { t: 'aim', c: boss.id });
+      const raw = parseInput(JSON.stringify({ t: 'i', d: [seq + 1000 + flags, 0, 0, Math.PI, flags] }))!;
+      staged.world.queueInput(player, raw);
+      staged.tick();
+      player.state.stamina = player.derived.maxStamina;
+    }
+    assert.equal(ofKind(staged.events, 'crit').length, 0);
+    assert.equal(ofKind(staged.events, 'critHit').length, 0);
+    assert.equal(player.state.criticalTime, 0);
+    assert.equal(boss.boss!.critBy, null);
+    assert.ok(boss.boss!.stunned);
   });
 });

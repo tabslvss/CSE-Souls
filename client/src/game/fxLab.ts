@@ -7,6 +7,8 @@ import { FootTrail, landHit, takeHit } from './fx/feel';
 import type { ParticlePool } from './fx/particles';
 import { sound } from '../sound';
 import { PsxRenderer, applyVertexSnap } from './psxRenderer';
+import { IMPACT_PRESETS, ImpactSequencer, type ImpactPresetName } from './impactFrames';
+import { CRITICAL_SAMPLES, CriticalFx } from './fx/critical';
 
 /*
  * Development page for trying each effect, at /fx-lab.html on the Vite dev server. Same PS1 and
@@ -42,6 +44,7 @@ const fx = new GameFx(scene, camera);
 const camFx = new CameraFx();
 const parts = { fx, camera: camFx, vhs: psx.vhs };
 const footTrail = new FootTrail(parts, true);
+const critFx = new CriticalFx({ scene, camera, fx, cameraFx: camFx, psx });
 
 let model: CharacterModel | null = null;
 void createCharacter('duelist', { ...DEFAULT_APPEARANCE, variant: 0 }).then((created) => {
@@ -54,6 +57,85 @@ void createCharacter('duelist', { ...DEFAULT_APPEARANCE, variant: 0 }).then((cre
 const chestStandIn = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, 0.55), new THREE.MeshLambertMaterial({ color: 0x3a2a18 }));
 chestStandIn.position.set(1.6, 0.25, 0);
 scene.add(chestStandIn);
+
+// Bright things for the impact frames to burn through: an ember brazier and an arcane orb.
+const glow = (color: number, x: number, y: number, z: number, size: number) => {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(size, 10, 8), new THREE.MeshBasicMaterial({ color }));
+  mesh.position.set(x, y, z);
+  scene.add(mesh);
+  const light = new THREE.PointLight(color, 3, 4);
+  light.position.copy(mesh.position);
+  scene.add(light);
+};
+glow(0xff7020, -1.4, 0.5, -1.2, 0.22);
+glow(0x60b0ff, 2.6, 1.6, -1.6, 0.18);
+
+/*
+ * Criticals: a character of the right class beside a block standing in for the stunned boss, its
+ * front face 3.4 m out as in the animation strips. The view pulls back to the side while one plays.
+ */
+const BOSS_RADIUS = 1.6;
+const BOSS_HEIGHT = 3.4;
+const BOSS_FEET = { x: 3.4 + BOSS_RADIUS, y: 0, z: 0 };
+const BOSS_HEAD = { x: BOSS_FEET.x - 0.6, y: BOSS_HEIGHT + 0.5, z: 0 };
+const bossStandIn = new THREE.Mesh(
+  new THREE.BoxGeometry(BOSS_RADIUS * 2, BOSS_HEIGHT, BOSS_RADIUS * 2),
+  new THREE.MeshLambertMaterial({ color: 0x4a3c30 }),
+);
+bossStandIn.position.set(BOSS_FEET.x, BOSS_HEIGHT / 2, 0);
+bossStandIn.visible = false;
+scene.add(bossStandIn);
+const critModels = new Map<string, Promise<CharacterModel>>();
+let critModel: CharacterModel | null = null;
+let critView = false;
+const critOffset = new THREE.Vector3();
+const ORIGIN = { x: 0, y: 0, z: 0 };
+
+function critCharacter(name: string): Promise<CharacterModel> {
+  const sample = CRITICAL_SAMPLES.find((item) => item.name === name)!;
+  let made = critModels.get(name);
+  if (!made) {
+    made = createCharacter(sample.classId, { ...DEFAULT_APPEARANCE, variant: sample.variant }).then((created) => {
+      created.root.rotation.y = Math.PI / 2;
+      created.root.visible = false;
+      scene.add(created.root);
+      return created;
+    });
+    critModels.set(name, made);
+  }
+  return made;
+}
+
+/** Plays one weapon's critical against the block. Resolves once it has started. */
+async function playCritical(name: string): Promise<void> {
+  const sample = CRITICAL_SAMPLES.find((item) => item.name === name)!;
+  const created = await critCharacter(name);
+  if (critModel && critModel !== created) critModel.root.visible = false;
+  critModel = created;
+  created.root.visible = true;
+  if (model) model.root.visible = false;
+  chestStandIn.visible = false;
+  bossStandIn.visible = true;
+  critView = true;
+  created.playCritical();
+  critFx.start({
+    classId: sample.classId,
+    variant: sample.variant,
+    attacker: { position: () => ORIGIN, yaw: Math.PI / 2, model: created },
+    target: { position: () => BOSS_FEET, radius: BOSS_RADIUS, height: BOSS_HEIGHT },
+    mine: true,
+  });
+}
+
+/** Back to the plain view with the default character. */
+function leaveCritical(): void {
+  critView = false;
+  if (critModel) critModel.root.visible = false;
+  if (model) model.root.visible = true;
+  chestStandIn.visible = true;
+  bossStandIn.visible = false;
+  critFx.weakPoint.hide();
+}
 
 const CHEST = { x: 0.1, y: 1.2, z: 0 };
 const FEET = { x: 0, y: 0, z: 0 };
@@ -132,6 +214,26 @@ const EFFECTS: Record<string, () => void> = {
   'feel-hurt': () => takeHit(parts, -Math.PI / 2, 0.4),
 };
 
+/** Impact frames on the chest, with a matching hit so there are bright particles to keep. */
+const impactFocus = { x: 0.5, y: 0.5 };
+const IMPACT_HIT: Record<ImpactPresetName, string> = { heavy: 'heavy', blade: 'blade', arrow: 'arrow', magic: 'magic', light: 'blade' };
+function playImpact(name: ImpactPresetName): void {
+  placeCamera();
+  camera.updateMatrixWorld();
+  ImpactSequencer.screenFocus(CHEST, camera, impactFocus);
+  fx.hit(CHEST, Math.PI / 2, IMPACT_HIT[name] as never, { heavy: name === 'heavy' });
+  psx.impact.play(name, { focus: impactFocus });
+}
+for (const name of Object.keys(IMPACT_PRESETS) as ImpactPresetName[]) EFFECTS[`impact-${name}`] = () => playImpact(name);
+for (const sample of CRITICAL_SAMPLES) EFFECTS[`crit-${sample.name}`] = () => void playCritical(sample.name);
+EFFECTS['crit-break'] = () => {
+  bossStandIn.visible = true;
+  critView = true;
+  critFx.bossBreak(BOSS_FEET, BOSS_HEIGHT);
+  critFx.weakPoint.show(() => BOSS_HEAD);
+};
+EFFECTS['crit-done'] = leaveCritical;
+
 function shake(glitch: number, heavy: boolean, kill: boolean): void {
   psx.vhs.glitch(glitch);
   psx.vhs.echo(glitch);
@@ -141,17 +243,32 @@ function shake(glitch: number, heavy: boolean, kill: boolean): void {
 
 let cameraAngle = 0;
 function placeCamera(): void {
+  if (critView) {
+    camera.position.set(3.2 + Math.sin(cameraAngle) * 9.5, 2.3, Math.cos(cameraAngle) * 9.5);
+    camera.lookAt(3.2, 1.5, 0);
+    return;
+  }
   camera.position.set(0.5 + Math.sin(cameraAngle) * 3.7, 1.75, Math.cos(cameraAngle) * 3.7);
   camera.lookAt(0.5, 0.95, 0);
 }
 
 /** One frame of game time. Returns nothing: the picture is on the canvas until the next one. */
 function step(seconds: number): void {
+  // The lab has no hitstop, so its frame time is the real time impact frames want.
+  psx.impact.update(seconds);
   placeCamera();
+  critFx.steerCamera(camera);
   const scale = camFx.apply(camera, seconds);
-  const scaled = seconds * camFx.fxTimeScale;
+  // A critical slows the world, but the attacker keeps real time: its own slow parts are in its animation.
+  const world = critFx.wantedTimeScale();
+  const scaled = seconds * camFx.fxTimeScale * world;
   clock += scaled;
-  model?.update(seconds * scale);
+  model?.update(seconds * scale * world);
+  if (critModel) {
+    critModel.update(seconds);
+    critModel.root.position.copy(critModel.criticalRootOffset(critOffset));
+  }
+  critFx.update(seconds, scaled);
   fx.update(scaled);
   if (runLeft > 0 && model) {
     runLeft -= scaled;
@@ -238,6 +355,23 @@ window.fxlab = {
   grab: () => canvas.toDataURL('image/png'),
   setCameraAngle: (angle: number) => { cameraAngle = angle; },
   stress,
+  playImpact,
+  /** Loads a critical's character ahead of time, so a script's first frame is the first frame. */
+  prepareCritical: (name: string) => critCharacter(name).then(() => true),
+  playCritical,
+  leaveCritical,
+  critFx,
+  criticalPhase: () => critModel?.criticalPhase() ?? -1,
+  /** Compiles the critical effects' shaders now, as the game does while the arena loads. */
+  prewarm: () => {
+    const start = performance.now();
+    critFx.prewarm(psx.renderer);
+    return performance.now() - start;
+  },
+  /** How many shader programs the renderer has built so far, to check that prewarm left nothing for later. */
+  programs: () => psx.renderer.info.programs?.length ?? 0,
+  /** Debug: where the impact sequencer is, for the contact-sheet script. */
+  impactActive: () => psx.impact.active,
 };
 
 const bar = document.getElementById('bar')!;

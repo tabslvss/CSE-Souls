@@ -1,0 +1,307 @@
+/*
+ * The controller look. Everything here applies only while a controller is the device in use,
+ * which ui/padNav.ts marks with classes on <html>:
+ *   .pad-active          a controller is in use (with .pad-playstation or .pad-xbox)
+ *   .pad-pointer-hidden  the controller was used since the mouse last moved
+ *   .pad-game            the game is being played and owns the controller
+ * Keyboard focus keeps the plain outline from base.css.
+ */
+
+:root {
+  --pad-gold: #ecd59b;
+  --pad-gold-deep: #b8913f;
+  --pad-glow: rgba(236, 200, 120, 0.42);
+  --pad-ease: cubic-bezier(0.22, 0.8, 0.26, 1);
+}
+
+/* ---------- The focused item ---------- */
+
+html.pad-active :focus {
+  outline: none;
+  scroll-margin: calc(var(--topbar-height) + 24px) 24px 104px;
+}
+
+html.pad-active :focus:not([data-pad-noring]) {
+  box-shadow:
+    0 0 0 1px rgba(236, 213, 155, 0.85),
+    0 0 18px var(--pad-glow),
+    inset 0 0 14px rgba(236, 200, 120, 0.12);
+}
+
+html.pad-active :is(a, button, summary, [data-pad-item]):focus:not([data-pad-noscale], [data-pad-noring]) {
+  scale: 1.03;
+  animation: pad-pop 0.18s var(--pad-ease);
+}
+
+@keyframes pad-pop {
+  from {
+    scale: 1;
+  }
+}
+
+/* Plain text links get a warm wash, as a glow around one word reads poorly. */
+html.pad-active a:not(.btn, [class*='card'], [class*='tile']):focus:not([data-pad-noring]) {
+  background-color: rgba(201, 164, 92, 0.14);
+  border-radius: 2px;
+}
+
+/* ---------- The highlight that glides from item to item ---------- */
+
+.pad-ring {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9000;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.pad-ring--on {
+  opacity: 1;
+}
+
+.pad-ring--glide {
+  transition:
+    opacity 0.16s ease,
+    transform 0.18s var(--pad-ease),
+    width 0.18s var(--pad-ease),
+    height 0.18s var(--pad-ease);
+}
+
+.pad-ring__corner {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 0 solid var(--pad-gold);
+  filter: drop-shadow(0 0 4px rgba(236, 200, 120, 0.75));
+  animation: pad-breathe 1.8s ease-in-out infinite;
+}
+
+.pad-ring__corner--tl {
+  top: 0;
+  left: 0;
+  border-top-width: 2px;
+  border-left-width: 2px;
+  --pad-out: -2px, -2px;
+}
+
+.pad-ring__corner--tr {
+  top: 0;
+  right: 0;
+  border-top-width: 2px;
+  border-right-width: 2px;
+  --pad-out: 2px, -2px;
+}
+
+.pad-ring__corner--bl {
+  bottom: 0;
+  left: 0;
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+  --pad-out: -2px, 2px;
+}
+
+.pad-ring__corner--br {
+  right: 0;
+  bottom: 0;
+  border-right-width: 2px;
+  border-bottom-width: 2px;
+  --pad-out: 2px, 2px;
+}
+
+/* A small gold diamond pointing at the item from its left. */
+.pad-ring__pointer {
+  position: absolute;
+  top: 50%;
+  left: -16px;
+  width: 9px;
+  height: 9px;
+  margin-top: -4.5px;
+  background: linear-gradient(135deg, #fff6dc 0%, var(--pad-gold) 45%, var(--pad-gold-deep) 100%);
+  rotate: 45deg;
+  box-shadow: 0 0 10px rgba(236, 200, 120, 0.9);
+  animation: pad-point 1.1s ease-in-out infinite;
+}
+
+@keyframes pad-breathe {
+  0%,
+  100% {
+    translate: 0 0;
+    opacity: 0.85;
+  }
+  50% {
+    translate: var(--pad-out);
+    opacity: 1;
+  }
+}
+
+@keyframes pad-point {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 4px 0;
+  }
+}
+
+/* ---------- The mouse steps aside ---------- */
+
+html.pad-pointer-hidden,
+html.pad-pointer-hidden * {
+  cursor: none !important;
+}
+
+/* Nothing can stay lit up under a mouse that is not being used. Moving the mouse brings it back. */
+html.pad-pointer-hidden body {
+  pointer-events: none;
+}
+
+/* ---------- Hint bar ---------- */
+
+.pad-hints-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 8999;
+  display: flex;
+  justify-content: center;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(201, 164, 92, 0.32);
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(201, 164, 92, 0.08) 50%, transparent 100%),
+    linear-gradient(180deg, rgba(10, 9, 8, 0.72) 0%, rgba(7, 6, 5, 0.94) 100%);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  animation: pad-bar-in 0.24s var(--pad-ease);
+}
+
+.pad-hints-bar::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  width: min(420px, 60%);
+  height: 1px;
+  translate: -50% 0;
+  background: linear-gradient(90deg, transparent, var(--pad-gold), transparent);
+}
+
+.pad-hints {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px 28px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pad-hints--inline {
+  justify-content: flex-end;
+  padding-top: 12px;
+}
+
+.pad-hints__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pad-hints__glyphs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.pad-hints__glyphs .input-glyph {
+  width: 30px;
+  height: 30px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+}
+
+.pad-hints__label {
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant: small-caps;
+  letter-spacing: 0.12em;
+  text-transform: lowercase;
+  color: var(--gold-bright);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* Keeps the end of a site page clear of the bar. */
+html.pad-active body:has(> .pad-hints-bar) .site {
+  padding-bottom: 56px;
+}
+
+@keyframes pad-bar-in {
+  from {
+    opacity: 0;
+    translate: 0 12px;
+  }
+}
+
+/* ---------- Short notes, such as "Typing needs a keyboard." ---------- */
+
+.pad-note {
+  position: fixed;
+  bottom: 74px;
+  left: 50%;
+  z-index: 9001;
+  padding: 8px 18px;
+  border: 1px solid var(--line-strong);
+  background: rgba(10, 9, 8, 0.94);
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  color: var(--gold-pale);
+  box-shadow: 0 0 22px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  opacity: 0;
+  translate: -50% 8px;
+  transition:
+    opacity 0.2s ease,
+    translate 0.2s var(--pad-ease);
+}
+
+.pad-note--on {
+  opacity: 1;
+  translate: -50% 0;
+}
+
+@media (max-width: 560px) {
+  .pad-hints {
+    gap: 4px 16px;
+  }
+
+  .pad-hints__glyphs .input-glyph {
+    width: 26px;
+    height: 26px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pad-ring,
+  .pad-ring--glide,
+  .pad-note {
+    transition: none;
+  }
+
+  .pad-ring__corner,
+  .pad-ring__pointer,
+  .pad-hints-bar {
+    animation: none;
+  }
+
+  html.pad-active :is(a, button, summary, [data-pad-item]):focus {
+    scale: none;
+    animation: none;
+  }
+}

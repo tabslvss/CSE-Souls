@@ -78,6 +78,16 @@ async function render() {
   });
   const page = await (await browser.newContext({ viewport: { width: 640, height: 480 } })).newPage();
   page.on('pageerror', (error) => console.log('page error:', String(error).slice(0, 300)));
+  // The dev server reloads the page whenever a source file is saved, which kills a render halfway.
+  // A socket that never connects keeps its hot reload quiet; the map lab needs no network of its own.
+  await page.addInitScript(() => {
+    window.WebSocket = class {
+      addEventListener() {}
+      removeEventListener() {}
+      send() {}
+      close() {}
+    };
+  });
   await page.goto(`${LAB}?manual=1&phase=0.5`, { timeout: 60000 });
   await page.waitForFunction(() => window.lab);
   await page.evaluate(() => window.lab.ready);
@@ -89,11 +99,13 @@ async function render() {
     writeFileSync(join(CACHE, `${name}.png`), Buffer.from(png, 'base64'));
     console.log(`rendered ${name} in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   };
-  await pass('lit', RENDER);
-  await pass('plain', { ...RENDER, shadows: false });
+  // The small masks go first: after the two huge renders the software GL context can come back
+  // empty, which left every mask blank and every grace reporting "no bonfire found".
   await pass('props', { width: W, height: H, propsOnly: true });
   await pass('built', { width: W, height: H, propsOnly: true, match: KINDS.built });
   await pass('bonfire', { width: W, height: H, propsOnly: true, match: KINDS.bonfire });
+  await pass('lit', RENDER);
+  await pass('plain', { ...RENDER, shadows: false });
 
   writeFileSync(join(CACHE, 'data.json'), JSON.stringify(await page.evaluate(() => window.lab.mapData())));
   await browser.close();
@@ -284,7 +296,7 @@ const EROSION = 0.07;
  * with what stands there: level at the castle, the shrine and the hamlet, a valley along the road, rolling
  * hills under the trees, and ranges closing in along the edges, with passes cut through them.
  */
-function landHeight(x, z, bounds, road) {
+function landHeight(x, z, bounds, road, gameHills = [], arena = null) {
   const { minX, maxX, minZ, maxZ } = bounds;
   const wobble = (fbm(x * 0.016 + 5, z * 0.016 - 3, 3) - 0.44) * 50;
   // Foothills wander well out from the land's straight borders, or the foot of a range is one long ruled line with a corner in it.
@@ -323,7 +335,34 @@ function landHeight(x, z, bounds, road) {
   flatten(1 - smooth(6, 30, rectDistance(x, z, -54, 54, 38, 106) + wobble * 0.16), 2);
   flatten(1 - smooth(10, 30, Math.hypot(x - 150, z - 10) + wobble * 0.16), 6);
   flatten(1 - smooth(6, 22, Math.hypot(x - 180, z + 30) + wobble * 0.14), 6);
-  return height;
+  if (arena) flatten(1 - smooth(26, 44, Math.hypot(x - arena.x, z - arena.z) + wobble * 0.2), 2);
+  return height + hillsAt(x, z, gameHills);
+}
+
+/** The game's own hills (MAP.hills), the same shape world.ts draws, standing on the invented land. */
+function hillsAt(x, z, hills) {
+  let total = 0;
+  for (let i = 0; i + 5 < hills.length; i += 6) {
+    const [hx, hz, rx, rz, height, yaw] = hills.slice(i, i + 6);
+    const dx = x - hx;
+    const dz = z - hz;
+    if (Math.abs(dx) > Math.max(rx, rz) || Math.abs(dz) > Math.max(rx, rz)) continue;
+    const u = (dx * Math.cos(yaw) - dz * Math.sin(yaw)) / rx;
+    const v = (dx * Math.sin(yaw) + dz * Math.cos(yaw)) / rz;
+    total += Math.max(0, hillSurface(i / 6, height, height / Math.min(rx, rz), u, v));
+  }
+  return total;
+}
+
+/** Copied from tools/build-map.mjs. */
+function hillSurface(index, height, steep, u, v) {
+  const r2 = u * u + v * v;
+  if (r2 >= 1) return -0.3;
+  const r = Math.sqrt(r2);
+  const angle = Math.atan2(v, u);
+  const rock = smooth(0.9, 1.6, steep);
+  const bump = (0.08 * Math.sin(angle * 3 + index * 1.7) + 0.05 * Math.sin(angle * 5 + index * 2.9 + r * 3)) * (1 + rock) * r;
+  return (height + 0.3) * Math.pow(1 - r2, 1.5 - 0.7 * rock) * (1 + bump) - 0.3;
 }
 
 /**
@@ -331,7 +370,7 @@ function landHeight(x, z, bounds, road) {
  * smooth worms. Letting rain find its way downhill and cut channels (a simple stream-power model) gives the
  * branching valleys and sharp spurs of a real range. Only high ground is carved, so the flat places stay flat.
  */
-function erodedField(bounds, road) {
+function erodedField(bounds, road, hills, arena) {
   const step = 2;
   const { minX, maxX, minZ, maxZ } = SURROUND;
   const columns = (maxX - minX) / step;
@@ -342,7 +381,7 @@ function erodedField(bounds, road) {
     for (let column = 0; column < columns; column += 1) {
       const x = minX + (column + 0.5) * step;
       const z = minZ + (row + 0.5) * step;
-      const height = landHeight(x, z, bounds, road);
+      const height = landHeight(x, z, bounds, road, hills, arena);
       // Rough ground gives the water something to choose between. On smooth ground it just runs in parallel.
       start[row * columns + column] = height + smooth(10, 26, height) * (fbm(x * 0.07 + 13, z * 0.07 - 29, 5) - 0.48) * 22;
     }
@@ -746,7 +785,7 @@ async function paint() {
   console.log('building the land');
   const road = toLine(data.road);
   const trails = (data.trails ?? []).map(toLine);
-  const eroded = erodedField(data.bounds, road);
+  const eroded = erodedField(data.bounds, road, data.hills ?? [], (data.camps ?? []).find((camp) => camp.kind === 'bull_boss'));
   const grid = heightGrid({ minX, maxX, minZ, maxZ }, W, H, pixelsPerMeter, eroded);
   const heights = grid.heights;
   const land = buildRelief(grid);

@@ -80,19 +80,32 @@ export interface WeaponStats {
   projectile?: ProjectileShape;
   meteor?: MeteorShape;
   crescent?: CrescentShape;
+  /**
+   * Meters the player ends up forward along their yaw when a critical ends, matching the animation's `travel`
+   * in client/src/game/attacks/*.ts (the katana's dash goes right through the boss). Left out for 0.
+   * stepPlayer applies it, then collide(), on the step criticalTime reaches 0, so server and prediction agree.
+   */
+  criticalTravel?: number;
 }
+
+/** How long a critical lasts, in seconds. */
+export const CRITICAL_SECONDS = 2.8;
+/** Where in a critical the damage lands, as a share of its length. */
+export const CRITICAL_IMPACT_AT = 0.6;
+/** The value of criticalTime at the impact moment: the server deals the damage on the step it crosses this. */
+export const CRITICAL_IMPACT_TIME = CRITICAL_SECONDS * (1 - CRITICAL_IMPACT_AT);
 
 /** Order matches the weapon setups in client/src/game/armory.ts, selected by appearance.variant. */
 export const WEAPONS: Record<ClassId, readonly [WeaponStats, WeaponStats, WeaponStats]> = {
   juggernaut: [
     { label: 'War hammer', style: 'heavy', governing: 'strength', damage: 46, attackSeconds: 1.25, hitAt: 0.5, cost: 30, usesMagic: false, stagger: 60, attackMoveMultiplier: 0.2, melee: { reach: 2.8, arcDegrees: 110, maxTargets: 4 } },
     { label: 'Double axe', style: 'heavy', governing: 'strength', damage: 40, attackSeconds: 1.1, hitAt: 0.5, cost: 24, usesMagic: false, stagger: 40, attackMoveMultiplier: 0.2, melee: { reach: 3, arcDegrees: 140, maxTargets: 5 } },
-    { label: 'Mace and shield', style: 'heavy', governing: 'strength', damage: 28, attackSeconds: 0.8, hitAt: 0.42, cost: 16, usesMagic: false, stagger: 34, attackMoveMultiplier: 0.3, melee: { reach: 2.3, arcDegrees: 100, maxTargets: 3 } },
+    { label: 'Mace and shield', style: 'heavy', governing: 'strength', damage: 28, attackSeconds: 0.8, hitAt: 0.42, cost: 16, usesMagic: false, stagger: 34, attackMoveMultiplier: 0.3, melee: { reach: 2.3, arcDegrees: 100, maxTargets: 3 }, criticalTravel: 2.3 },
   ],
   duelist: [
-    { label: 'Katana', style: 'blade', governing: 'dexterity', damage: 20, attackSeconds: 0.6, hitAt: 0.46, cost: 10, usesMagic: false, stagger: 12, attackMoveMultiplier: 0.3, melee: { reach: 2.6, arcDegrees: 90, maxTargets: 2 } },
-    { label: 'Longsword', style: 'blade', governing: 'dexterity', damage: 24, attackSeconds: 0.68, hitAt: 0.42, cost: 12, usesMagic: false, stagger: 16, attackMoveMultiplier: 0.3, melee: { reach: 2.6, arcDegrees: 100, maxTargets: 3 } },
-    { label: 'Zweihander', style: 'heavy', governing: 'dexterity', damage: 42, attackSeconds: 1.15, hitAt: 0.5, cost: 24, usesMagic: false, stagger: 48, attackMoveMultiplier: 0.2, melee: { reach: 3.2, arcDegrees: 120, maxTargets: 4 } },
+    { label: 'Katana', style: 'blade', governing: 'dexterity', damage: 20, attackSeconds: 0.6, hitAt: 0.46, cost: 10, usesMagic: false, stagger: 12, attackMoveMultiplier: 0.3, melee: { reach: 2.6, arcDegrees: 90, maxTargets: 2 }, criticalTravel: 9 },
+    { label: 'Longsword', style: 'blade', governing: 'dexterity', damage: 24, attackSeconds: 0.68, hitAt: 0.42, cost: 12, usesMagic: false, stagger: 16, attackMoveMultiplier: 0.3, melee: { reach: 2.6, arcDegrees: 100, maxTargets: 3 }, criticalTravel: 1.9 },
+    { label: 'Zweihander', style: 'heavy', governing: 'dexterity', damage: 42, attackSeconds: 1.15, hitAt: 0.5, cost: 24, usesMagic: false, stagger: 48, attackMoveMultiplier: 0.2, melee: { reach: 3.2, arcDegrees: 120, maxTargets: 4 }, criticalTravel: 1.85 },
   ],
   arcanist: [
     { label: 'Magic staff', style: 'magic', governing: 'arcane', damage: 58, attackSeconds: 1.5, hitAt: 0.5, cost: 30, usesMagic: true, stagger: 45, attackMoveMultiplier: 0.25, meteor: { delaySeconds: 1.1, castRange: 22, coneDegrees: 80, aheadDistance: 11, radius: 6.5, maxTargets: 8 } },
@@ -102,7 +115,7 @@ export const WEAPONS: Record<ClassId, readonly [WeaponStats, WeaponStats, Weapon
   ranger: [
     { label: 'Longbow', style: 'arrow', governing: 'dexterity', damage: 34, attackSeconds: 1.05, hitAt: 0.58, cost: 12, usesMagic: false, stagger: 10, attackMoveMultiplier: 0.45, projectile: { speed: 34, range: 38, splash: 0, maxTargets: 1 } },
     { label: 'Shortbow', style: 'arrow', governing: 'dexterity', damage: 20, attackSeconds: 0.68, hitAt: 0.58, cost: 8, usesMagic: false, stagger: 6, attackMoveMultiplier: 0.6, projectile: { speed: 30, range: 28, splash: 0, maxTargets: 1 } },
-    { label: 'Spear', style: 'thrust', governing: 'dexterity', damage: 26, attackSeconds: 0.8, hitAt: 0.48, cost: 12, usesMagic: false, stagger: 18, attackMoveMultiplier: 0.3, melee: { reach: 3.8, arcDegrees: 45, maxTargets: 3 } },
+    { label: 'Spear', style: 'thrust', governing: 'dexterity', damage: 26, attackSeconds: 0.8, hitAt: 0.48, cost: 12, usesMagic: false, stagger: 18, attackMoveMultiplier: 0.3, melee: { reach: 3.8, arcDegrees: 45, maxTargets: 3 }, criticalTravel: 2.5 },
   ],
 };
 

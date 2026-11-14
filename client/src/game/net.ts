@@ -2,6 +2,7 @@ import type { StatKey } from '../../../shared/classes';
 import { weaponFor } from '../../../shared/combat';
 import { MAP } from '../../../shared/mapData';
 import type {
+  BossSnapshot,
   ClientMessage,
   CreatureSnapshot,
   GameEvent,
@@ -53,6 +54,8 @@ export interface RemoteFrame {
   drinkTime: number;
   jumpTime: number;
   resting: number;
+  /** Above 0 through a critical hit, counting down. */
+  criticalTime: number;
 }
 
 export interface NetPlayer {
@@ -69,6 +72,8 @@ export interface NetEvents {
   /** Called on every (re)connect, with the full player list. */
   onWelcome: (myId: number, players: PlayerInfo[], binaryDust: number, chests: number[], graces: number[]) => void;
   onCreatures: (creatures: CreatureSnapshot[]) => void;
+  /** The boss health bar from each snapshot, or undefined when this snapshot left it out. */
+  onBoss: (boss: BossSnapshot | undefined) => void;
   /** Runs after onCreatures for the same snapshot, so a hit can always find its creature. */
   onGameEvents: (events: GameEvent[]) => void;
   onSelf: (dust: number, kills: number) => void;
@@ -84,8 +89,11 @@ export interface NetEvents {
   onRefused: (reason: RefusalReason) => void;
 }
 
-/** What one fixed step reads from the keyboard and mouse. Interact only goes to the server. */
-export type FrameInput = Omit<SimInput, 'seq'> & { interact: boolean };
+/**
+ * What one fixed step reads from the keyboard and mouse. Interact only goes to the server. holdAttack sends
+ * the attack without predicting a swing: next to a stunned boss the server may turn it into a critical instead.
+ */
+export type FrameInput = Omit<SimInput, 'seq'> & { interact: boolean; holdAttack?: boolean };
 
 /**
  * The server's map is newer than this page's copy, so collisions would disagree. A reload picks up the
@@ -192,6 +200,7 @@ export class GameConnection {
       case 's':
         this.onSnapshot(message.a, message.p);
         this.events.onCreatures(message.c);
+        this.events.onBoss(message.b);
         if (message.e) this.events.onGameEvents(message.e);
         break;
       case 'self':
@@ -289,6 +298,7 @@ export class GameConnection {
         drinkTime: entry[19],
         jumpTime: entry[20],
         resting: entry[21],
+        criticalTime: Number.isFinite(entry[22]) ? entry[22] : 0,
       });
       if (player.frames.length > MAX_SNAPSHOTS_KEPT) player.frames.shift();
     }
@@ -339,7 +349,7 @@ export class GameConnection {
     while (this.accumulator >= TICK_DT) {
       this.accumulator -= TICK_DT;
       const read = readInput();
-      const input: SimInput = { seq: ++this.seq, ...read };
+      const input: SimInput = { seq: ++this.seq, mx: read.mx, mz: read.mz, yaw: read.yaw, run: read.run, dodge: read.dodge, attack: read.attack && !read.holdAttack, potion: read.potion, jump: read.jump };
       this.previous = { ...this.state };
       stepPlayer(this.state, input, this.derived);
       this.pending.push(input);
@@ -348,7 +358,7 @@ export class GameConnection {
       const flags =
         (input.run ? FLAG_RUN : 0) |
         (input.dodge ? FLAG_DODGE : 0) |
-        (input.attack ? FLAG_ATTACK : 0) |
+        (read.attack ? FLAG_ATTACK : 0) |
         (input.potion ? FLAG_POTION : 0) |
         (input.jump ? FLAG_JUMP : 0) |
         (read.interact ? FLAG_INTERACT : 0);
@@ -402,6 +412,8 @@ export class GameConnection {
           z: a.z + (b.z - a.z) * t,
           yaw: lerpAngle(a.yaw, b.yaw, t),
           jumpTime: smoothedJump(a.jumpTime, b.jumpTime, t),
+          // A critical's travel lands between these two frames, so it stays on until both say it's over.
+          criticalTime: Math.max(a.criticalTime, b.criticalTime),
         };
       }
     }

@@ -1,5 +1,13 @@
 import { TEAM } from '../components/Layout';
 import { Panel, SectionHeading } from '../components/Ornaments';
+import { PadHints, type PadHint } from '../ui/PadHints';
+
+const HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'confirm', label: 'Open link' },
+  { button: 'scroll', label: 'Scroll' },
+  { button: 'back', label: 'Back' },
+];
 
 const MUSIC = ['Night Vigil', 'Ancient Rite'];
 
@@ -36,6 +44,13 @@ export function CreditsPage() {
               Compressed for the web, with a short fade added at each end.
             </li>
           ))}
+          <li>
+            The boss fight music is made from “Final Battle of the Dark Wizards” by Kevin MacLeod{' '}
+            (<External href="https://incompetech.com">incompetech.com</External>). Licensed under{' '}
+            <External href="https://creativecommons.org/licenses/by/4.0/">Creative Commons: By Attribution 4.0</External>.
+            Edited and layered: cut into loops, split into three layers that fade in and out, with added drums, choir and
+            short pieces for the start, the stun and the win.
+          </li>
         </ul>
 
         <h2 className="panel-title">Sound effects</h2>
@@ -43,7 +58,9 @@ export function CreditsPage() {
           Most sounds were generated with <External href="https://elevenlabs.io/terms-of-use">ElevenLabs</External> Sound
           Effects for this project, then edited. Footsteps and some hits use{' '}
           <External href="https://kenney.nl/assets/impact-sounds">Impact Sounds</External> and{' '}
-          <External href="https://kenney.nl/assets/rpg-audio">RPG Audio</External> by Kenney, released under CC0.
+          <External href="https://kenney.nl/assets/rpg-audio">RPG Audio</External> by Kenney, released under CC0. The boss
+          and critical hit sounds also layer in <External href="https://kenney.nl/assets/sci-fi-sounds">Sci-fi Sounds</External>{' '}
+          by Kenney, released under CC0, along with sounds made from scratch for this project.
         </p>
 
         <h2 className="panel-title">Website art</h2>
@@ -130,6 +147,7 @@ export function CreditsPage() {
         <h2 className="panel-title">Fonts</h2>
         <p>Cinzel and EB Garamond, under the SIL Open Font License.</p>
       </Panel>
+      <PadHints hints={HINTS} />
     </div>
   );
 }

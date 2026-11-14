@@ -32,6 +32,7 @@ const VIEWS: Record<string, [number, number, number, number, number, number]> = 
   flats: [24, 2.2, -8, -5, 6, -100],
   closedWest: [-40, 2.2, 8, -110, 5, 8],
   closedEast: [40, 2.2, -92, 110, 8, -125],
+  arena: [-112, 4, 166, -150, 2, 160],
   overview: [0, 340, 60, 0, 0, -30],
 };
 
@@ -206,7 +207,7 @@ function bakeTopDown({ width, height, sun, propsOnly = false, shadows = true, ma
   setOverlay(false);
   // A grid this fine turns the PS1 vertex wobble off.
   snapUniform.value.set(1e6, 1e6);
-  const { ground, sun: light } = world.prepareTopDown(new THREE.Vector3(...sun));
+  const { ground, hills, sun: light } = world.prepareTopDown(new THREE.Vector3(...sun));
   const meshes: THREE.Mesh[] = [];
   world.scene.traverse((object) => {
     if ((object as THREE.Mesh).isMesh) meshes.push(object as THREE.Mesh);
@@ -242,7 +243,8 @@ function bakeTopDown({ width, height, sun, propsOnly = false, shadows = true, ma
   const wasVisible = new Map(meshes.map((mesh) => [mesh, mesh.visible]));
   const matches = match ? new RegExp(match) : null;
   if (propsOnly) {
-    for (const mesh of meshes) mesh.visible = mesh !== ground && mesh.visible && (!matches || matches.test(mesh.name));
+    // The hills are land, painted as relief from MAP.hills, not things standing on it.
+    for (const mesh of meshes) mesh.visible = mesh !== ground && mesh !== hills && mesh.visible && (!matches || matches.test(mesh.name));
     bakeRenderer.render(world.scene, top);
   }
   bakeRenderer.getContext().finish();
@@ -267,7 +269,7 @@ declare global {
       /** The world itself, so that a test can call its chest functions directly. */
       world: typeof world;
       bakeTopDown: typeof bakeTopDown;
-      mapData: () => Pick<typeof MAP, 'bounds' | 'road' | 'trails' | 'zones' | 'graces' | 'spawn' | 'props'>;
+      mapData: () => Pick<typeof MAP, 'bounds' | 'road' | 'trails' | 'zones' | 'graces' | 'spawn' | 'props' | 'hills' | 'camps'>;
       views: string[];
       ready: Promise<void>;
     };
@@ -314,7 +316,7 @@ window.lab = {
   },
   world,
   bakeTopDown,
-  mapData: () => ({ bounds: MAP.bounds, road: MAP.road, trails: MAP.trails, zones: MAP.zones, graces: MAP.graces, spawn: MAP.spawn, props: MAP.props }),
+  mapData: () => ({ bounds: MAP.bounds, road: MAP.road, trails: MAP.trails, zones: MAP.zones, graces: MAP.graces, spawn: MAP.spawn, props: MAP.props, hills: MAP.hills, camps: MAP.camps }),
   views: Object.keys(VIEWS),
   ready: world.ready,
 };

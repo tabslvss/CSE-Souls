@@ -15,7 +15,7 @@ export interface PlayerInfo {
 /**
  * One player inside a snapshot, as a compact array:
  * id, x, z, yaw, stamina, moving, dodgeTime, attackTime, attackCount, dodgeX, dodgeZ, regenDelay,
- * health, magic, staggerTime, knockX, knockZ, deadTime, potions, drinkTime, jumpTime, resting
+ * health, magic, staggerTime, knockX, knockZ, deadTime, potions, drinkTime, jumpTime, resting, criticalTime
  */
 export type PlayerSnapshot = [
   id: number,
@@ -40,6 +40,7 @@ export type PlayerSnapshot = [
   drinkTime: number,
   jumpTime: number,
   resting: number,
+  criticalTime: number,
 ];
 
 function round(value: number): number {
@@ -71,17 +72,27 @@ export function packSnapshot(id: number, s: SimState): PlayerSnapshot {
     round(s.drinkTime),
     round(s.jumpTime),
     s.resting,
+    round(s.criticalTime),
   ];
 }
 
 export function applySnapshot(entry: PlayerSnapshot, state: SimState): void {
   [, state.x, state.z, state.yaw, state.stamina, state.moving, state.dodgeTime, state.attackTime, state.attackCount,
     state.dodgeX, state.dodgeZ, state.regenDelay, state.health, state.magic, state.staggerTime, state.knockX,
-    state.knockZ, state.deadTime, state.potions, state.drinkTime, state.jumpTime, state.resting] = entry;
+    state.knockZ, state.deadTime, state.potions, state.drinkTime, state.jumpTime, state.resting,
+    state.criticalTime] = entry;
 }
 
 /** One creature inside a snapshot: id, kind (index into CREATURES), x, z, yaw, state (CreatureState), health percent. */
 export type CreatureSnapshot = [number, number, number, number, number, number, number];
+
+/**
+ * The boss health bar, sent in each snapshot only to players within BOSS_BAR_RANGE of the arena while the boss
+ * is alive and has noticed someone. Cheaper than a separate message, and it fixes itself if one is lost.
+ * creature id, kind (index into CREATURES, for the name), health, max health, stance (0..255 of BOSS_STANCE.max,
+ * see packStance), and stun seconds left in tenths (0 while standing, see packStunLeft).
+ */
+export type BossSnapshot = [c: number, kind: number, hp: number, max: number, stance: number, stunLeft: number];
 
 /** Index into WEAPON_STYLES. */
 export type StyleIndex = number;
@@ -125,6 +136,34 @@ export type GameEvent =
   | { k: 'meteorEnd'; id: number; by: number; x: number; z: number; radius: number; style: StyleIndex }
   /** Red Binary Dust bursts out of a corpse and flies to the player who earned it. */
   | { k: 'dust'; x: number; z: number; n: number; to: number }
+  /**
+   * A boss move's windup began. m is a BossMove id (shared/boss.ts), x, z, yaw where the boss stands, t the
+   * windup seconds. tx, tz is the landing point for a leap and the aim point for every other move.
+   * There are no extra CreatureState values: the browser poses the boss from this event.
+   */
+  | { k: 'bossTell'; c: number; m: number; x: number; z: number; yaw: number; tx: number; tz: number; t: number }
+  /** A boss move's hit moment: swipe lands, charge starts running, leap lands, fireballs fly, stomp ring starts. */
+  | { k: 'bossHit'; c: number; m: number; x: number; z: number; yaw: number }
+  /**
+   * A boss fireball set off. Its own event, not 'shot', because 'shot' carries a player id and a player weapon
+   * style. Flies straight from x, z along yaw until the matching 'bossShotEnd'. r is its hit radius.
+   */
+  | { k: 'bossShot'; id: number; c: number; x: number; z: number; yaw: number; speed: number; range: number; r: number }
+  /** A boss fireball hit a player (hit 1, v is that player) or burned out (hit 0, v is 0). */
+  | { k: 'bossShotEnd'; id: number; x: number; z: number; hit: 0 | 1; v: number }
+  /** A boss move hit a player for dmg. The player's own snapshot shows the knockback. */
+  | { k: 'bossDmg'; c: number; m: number; v: number; dmg: number }
+  /** The boss's stance broke at x, z: it collapses stunned for BOSS_STANCE.stunSeconds. */
+  | { k: 'bossBreak'; c: number; x: number; z: number }
+  /**
+   * Player by started a critical on boss c, standing at x, z facing yaw. w is the weapon variant (0..2) and cls the
+   * class's index in CLASSES (shared/classes.ts), so effects need no PlayerInfo lookup. The damage lands CRITICAL_IMPACT_TIME later.
+   */
+  | { k: 'crit'; by: number; c: number; x: number; z: number; yaw: number; w: number; cls: number }
+  /** A critical's impact: dmg dealt to boss c at x, z (the boss's position), kill 1 if it died. */
+  | { k: 'critHit'; by: number; c: number; x: number; z: number; dmg: number; kill: 0 | 1 }
+  /** Boss c got up: its stun is over. */
+  | { k: 'bossRise'; c: number }
   | { k: 'death'; v: number }
   | { k: 'respawn'; v: number }
   | { k: 'drink'; v: number };
@@ -156,8 +195,8 @@ export type ServerMessage =
     }
   | { t: 'join'; player: PlayerInfo }
   | { t: 'leave'; id: number }
-  /** a is the newest input of yours the server has applied. c and e are limited to what's near you. */
-  | { t: 's'; a: number; p: PlayerSnapshot[]; c: CreatureSnapshot[]; e?: GameEvent[] }
+  /** a is the newest input of yours the server has applied. c and e are limited to what's near you, and b is left out away from the boss. */
+  | { t: 's'; a: number; p: PlayerSnapshot[]; c: CreatureSnapshot[]; e?: GameEvent[]; b?: BossSnapshot }
   /** Your own totals changed. */
   | { t: 'self'; dust: number; kills: number }
   /** You opened a chest. Other players still see it closed. */

@@ -114,8 +114,9 @@ const GRADE: Record<string, [number, number, number]> = {
   banner_gold: [0.72, 0.62, 0.42],
   banner_crimson: [1.05, 0.8, 0.75],
   gold: [1.5, 1.3, 0.9],
-  leaf_moss: [0.82, 0.86, 0.62],
-  leaf_pine: [0.8, 0.86, 0.72],
+  // The leaf textures are painted nearly black; raw, a canopy reads as bare branches at dusk.
+  leaf_moss: [2.1, 2.35, 1.45],
+  leaf_pine: [2.9, 3.2, 2.3],
   leaf_blood: [1, 0.72, 0.6],
   bark_gradient: [1.1, 1, 0.9],
   bark_twisted: [1, 0.95, 0.85],
@@ -143,6 +144,12 @@ function convertMaterial(source: THREE.MeshStandardMaterial, fogCap: { value: nu
   if (name === 'ember') {
     material.emissive.copy(source.emissive);
     material.emissiveIntensity = source.emissiveIntensity;
+  }
+  if (foliage) {
+    // Leaves cut out cleanly and keep a little of their own light, so a crown still shows against a dim sky.
+    material.alphaTest = Math.max(material.alphaTest, 0.5);
+    material.emissiveMap = source.map;
+    material.emissive.copy(material.color).multiplyScalar(0.3);
   }
   // Instance colors tint plants by zone, so their base color stays neutral.
   applyLook(material, {
@@ -196,9 +203,11 @@ function plantTint(node: string, x: number, z: number, target: THREE.Color, rand
     return;
   }
   if (z > 112) {
-    // Dead gold, in drifting patches.
+    // Living green around the spawn, drifting into patches of dry gold out in the meadow.
     const patch = 0.5 + 0.5 * Math.sin(x * 0.09 + Math.sin(z * 0.07) * 2);
-    target.setRGB(4.1 + patch * 0.9, 2.95 + patch * 0.6, 1.25 + patch * 0.25).multiplyScalar(jitter);
+    const dry = patch * smooth(20, 90, Math.hypot(x, z - 178)) * 0.8;
+    if (node.startsWith('fern')) target.setRGB(0.7 + dry * 0.25, 0.9, 0.52).multiplyScalar(jitter);
+    else target.setRGB(2.5 + dry * 1.9, 3.15 - dry * 0.1, 1.2 + dry * 0.1).multiplyScalar(jitter);
   } else if (x > 60) {
     target.setRGB(0.62, 0.74, 0.5).multiplyScalar(jitter);
   } else {
@@ -382,8 +391,11 @@ function buildPropSets(
   return sets;
 }
 
+/** Scratch for cullProps, kept so that the per-frame culling allocates nothing. */
+const cullScratch = new Int32Array(1024);
+
 function cullProps(sets: PropSet[], frustum: THREE.Frustum, cameraPosition: THREE.Vector3, fogFar: number, everything = false): void {
-  const next = new Int32Array(1024);
+  const next = cullScratch;
   for (const set of sets) {
     const limit = everything ? Infinity : set.castle ? set.reach : Math.min(set.reach, fogFar + 6);
     let visible = 0;
@@ -652,6 +664,9 @@ function makeSkyMaterial(silhouettes: THREE.Texture): THREE.ShaderMaterial {
 
 /* ---------- Ground ---------- */
 
+/** The meadow's grass over the moss texture, shared by the ground and the hills so a hill's foot matches. */
+const MEADOW_GRASS = 'vec3(2.0, 2.55, 1.15)';
+
 /** Open land the player can stand on; mountains rise from everything outside it. */
 function outsideDistance(x: number, z: number): number {
   const outOf = (minX: number, maxX: number, minZ: number, maxZ: number) => {
@@ -775,7 +790,7 @@ function bakeGroundMasks(): { a: THREE.DataTexture; b: THREE.DataTexture } {
   const sz = (maxZ - minZ) / size;
 
   // Shade first: a soft dark blob under everything solid, so nothing floats on the ground.
-  const paint = (cx: number, cz: number, reach: number, strength: number, inside: (x: number, z: number) => number) => {
+  const paint = (cx: number, cz: number, reach: number, strength: number, inside: (x: number, z: number) => number, into = shade) => {
     const left = Math.max(0, Math.floor((cx - reach - minX) / sx));
     const right = Math.min(size - 1, Math.ceil((cx + reach - minX) / sx));
     const top = Math.max(0, Math.floor((cz - reach - minZ) / sz));
@@ -784,7 +799,7 @@ function bakeGroundMasks(): { a: THREE.DataTexture; b: THREE.DataTexture } {
       for (let column = left; column <= right; column += 1) {
         const value = inside(minX + (column + 0.5) * sx, minZ + (row + 0.5) * sz) * strength;
         const key = row * size + column;
-        shade[key] = 1 - (1 - shade[key]) * (1 - value);
+        into[key] = 1 - (1 - into[key]) * (1 - value);
       }
     }
   };
@@ -805,8 +820,21 @@ function bakeGroundMasks(): { a: THREE.DataTexture; b: THREE.DataTexture } {
     }
   }
 
+  // Leaf litter under the groves around the spawn and the meadow's copses.
+  const litter = new Float32Array(size * size);
+  for (const batch of MAP.props) {
+    if (batch.file !== 'forest' || !batch.node.startsWith('tree_') || batch.tilt || batch.y) continue;
+    for (let i = 0; i + 3 < batch.items.length; i += 4) {
+      const tx = batch.items[i];
+      const tz = batch.items[i + 1];
+      if (tz <= 112) continue;
+      paint(tx, tz, 4.5, 0.75, (x, z) => 1 - smooth(1, 4.5, Math.hypot(x - tx, z - tz)), litter);
+    }
+  }
+
   const trails = MAP.trails ?? [];
-  const zoneEdge = (x: number, z: number, x0: number, x1: number, z0: number, z1: number) =>
+  const arena = MAP.camps.find((camp) => camp.kind === 'bull_boss');
+  const zoneEdge =(x: number, z: number, x0: number, x1: number, z0: number, z1: number) =>
     Math.min(x - x0, x1 - x, z - z0, z1 - z);
   for (let row = 0; row < size; row += 1) {
     const z = minZ + (row + 0.5) * sz;
@@ -825,16 +853,23 @@ function bakeGroundMasks(): { a: THREE.DataTexture; b: THREE.DataTexture } {
       const village = smooth(-4, 6, zoneEdge(x, z, -60, 60, 30, 110) + wobble * 5);
       dirt = Math.max(dirt, village * (0.55 + wobble * 0.35));
       const yard = smooth(-2, 3, zoneEdge(x, z, -90, 90, -190, -100));
-      const shrine = 1 - smooth(9, 17, Math.hypot(x, z - 180) + wobble * 3);
+      const fromShrine = Math.hypot(x, z - 179);
+      // Solid paving about 8 m out, then broken flagstones with grass growing up between them.
+      const shrine = 1 - smooth(6.5, 9.5, fromShrine + wobble * 1.5);
+      const flags = (1 - smooth(8, 16, fromShrine + wobble * 3)) * smooth(-0.05, 0.25, fine + wobble * 0.3);
+      // Worn earth only close to the fire and across the great bull's ring; grass everywhere else in the south.
+      const shrineFringe = (1 - smooth(4, 8, Math.hypot(x, z - 176) + wobble * 2)) * (0.3 + fine * 0.15);
+      const ring = arena ? 1 - smooth(14, 27, Math.hypot(x - arena.x, z - arena.z) + wobble * 4) : 0;
+      dirt = Math.max(dirt, shrineFringe, ring * (0.75 + fine * 0.2));
       const apron = 1 - smooth(5, 15, Math.hypot(x, z + 94) + wobble * 3);
-      const paved = Math.max(yard * (0.72 + fine * 0.28), shrine * 0.75, apron * 0.7);
-      const meadow = smooth(-6, 7, z - 112 + wobble * 7) * (1 - shrine);
+      const paved = Math.max(yard * (0.72 + fine * 0.28), shrine * 0.8, flags * 0.75, apron * 0.7);
+      const meadow = smooth(-6, 7, z - 112 + wobble * 7) * (1 - shrine * 0.8);
       const ash = smooth(-5, 8, zoneEdge(x, z, -300, 60, -120, 30) + wobble * 6) * (1 - yard);
 
       const index = (row * size + column) * 4;
       a[index] = roadAmount * 255;
       a[index + 1] = Math.min(1, dirt) * 255;
-      a[index + 2] = Math.max(0, forestAmount - clearing * 0.45) * 255;
+      a[index + 2] = Math.max(forestAmount - clearing * 0.45, litter[row * size + column] * (1 - ring), 0) * 255;
       a[index + 3] = Math.min(1, paved) * 255;
       b[index] = meadow * 255;
       b[index + 1] = (0.5 + wobble * 0.3 + fine * 0.12) * 255;
@@ -904,7 +939,7 @@ function makeGroundMaterial(textures: THREE.Texture[], hazeOpen: { value: number
        vec4 maskB = texture2D(uMaskB, maskUv);
        vec2 tile = vGroundXz / 7.0;
        vec3 ground = texture2D(uEarth, tile).rgb * vec3(1.25, 1.12, 0.92);
-       ground = mix(ground, texture2D(uMoss, tile * 0.7).rgb * vec3(2.6, 2.2, 1.25), maskB.r);
+       ground = mix(ground, texture2D(uMoss, tile * 0.7).rgb * ${MEADOW_GRASS}, maskB.r);
        // The dirt texture has big pale stones. Two rotated layers, keeping the darker, leave few of them,
        // and no tiling, where one layer looks like a trail of stepping stones.
        vec3 dirtFar = min(texture2D(uDirt, tile * 0.6).rgb, texture2D(uDirt, vec2(tile.y, -tile.x) * 0.23 + 0.31).rgb) * 1.3;
@@ -914,6 +949,9 @@ function makeGroundMaterial(textures: THREE.Texture[], hazeOpen: { value: number
        ground = mix(ground, dirtNear * vec3(1.2, 1.05, 0.85), maskA.g);
        ground = mix(ground, texture2D(uRubble, tile * 0.8).rgb * vec3(1.05, 1.05, 1.0), maskA.a * 0.45);
        ground = mix(ground, texture2D(uStone, tile * 0.9).rgb * vec3(1.15, 1.08, 0.98), maskA.a * 0.65);
+       // Old paving: moss creeps across the stones in patches.
+       float mossy = smoothstep(0.42, 0.75, maskB.g) * maskA.a;
+       ground = mix(ground, texture2D(uMoss, tile * 1.3).rgb * ${MEADOW_GRASS} * 0.75, mossy * 0.55);
        ground = mix(ground, texture2D(uRoad, tile * 1.4).rgb * vec3(1.35, 1.25, 1.1), maskA.r);
        ground *= 3.0 * (0.72 + 0.56 * maskB.g) * mix(maskB.a, 1.0, 0.1);
        float cliff = smoothstep(0.5, 6.0, vGroundHeight);
@@ -930,6 +968,137 @@ function makeGroundMaterial(textures: THREE.Texture[], hazeOpen: { value: number
     );
   };
   material.customProgramCacheKey = () => 'world-ground';
+  return material;
+}
+
+/* ---------- Hills ---------- */
+
+const HILL_SINK = 0.3;
+const HILL_RINGS = 7;
+const HILL_SIDES = 18;
+
+/**
+ * Height above the ground of a hill's surface, where u and v are 1 at the edge of its base. The same
+ * formula is in tools/build-map.mjs, which uses it to stand trees and grass on the hilltops.
+ */
+function hillSurface(index: number, height: number, steep: number, u: number, v: number): number {
+  const r2 = u * u + v * v;
+  if (r2 >= 1) return -HILL_SINK;
+  const r = Math.sqrt(r2);
+  const angle = Math.atan2(v, u);
+  const rock = smooth(0.9, 1.6, steep);
+  const bump = (0.08 * Math.sin(angle * 3 + index * 1.7) + 0.05 * Math.sin(angle * 5 + index * 2.9 + r * 3)) * (1 + rock) * r;
+  return (height + HILL_SINK) * Math.pow(1 - r2, 1.5 - 0.7 * rock) * (1 + bump) - HILL_SINK;
+}
+
+/** Every hill in one mesh: a squashed dome on rings, grass-colored at the foot and rockier on steep tops. */
+function buildHillGeometry(hills: number[]): THREE.BufferGeometry {
+  const count = Math.floor(hills.length / 6);
+  const perHill = 1 + HILL_RINGS * HILL_SIDES;
+  const positions = new Float32Array(count * perHill * 3);
+  const colors = new Float32Array(count * perHill * 3);
+  const rockiness = new Float32Array(count * perHill);
+  const haze = new Float32Array(count * perHill);
+  const indices: number[] = [];
+  const foot = new THREE.Color(0.8, 0.82, 0.76);
+  const top = new THREE.Color(1.06, 1.14, 0.92);
+  const color = new THREE.Color();
+  for (let h = 0; h < count; h += 1) {
+    const [x, z, rx, rz, height, yaw] = hills.slice(h * 6, h * 6 + 6);
+    const steep = height / Math.min(rx, rz);
+    const rocky = smooth(0.9, 1.6, steep);
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    const toWorld = (u: number, v: number) => [x + u * rx * cos + v * rz * sin, z - u * rx * sin + v * rz * cos];
+    // Hills past the map's edge stand on the land rising there; inside it the ground is flat at 0.
+    let base = terrainHeight(x, z);
+    for (let j = 0; j < 8; j += 1) {
+      const [px, pz] = toWorld(Math.cos(j * 0.785) * 0.9, Math.sin(j * 0.785) * 0.9);
+      base = Math.min(base, terrainHeight(px, pz));
+    }
+    const start = h * perHill;
+    // Only the horizon hills keep their shape in the fog, like the mountains; near ones fade with the ground.
+    const far = outsideDistance(x, z) > 3 ? 1 : 0;
+    const write = (vertex: number, u: number, v: number) => {
+      const [px, pz] = toWorld(u, v);
+      const lift = hillSurface(h, height, steep, u, v);
+      const t = Math.min(1, Math.max(0, lift / height));
+      const at = start + vertex;
+      positions[at * 3] = px;
+      positions[at * 3 + 1] = base + lift;
+      positions[at * 3 + 2] = pz;
+      const speckle = terrainHash(px, pz);
+      haze[at] = far;
+      rockiness[at] = Math.min(1, rocky * (0.25 + t * 1.1) * (0.8 + 0.4 * speckle));
+      color.copy(foot).lerp(top, smooth(0, 0.6, t)).multiplyScalar(0.92 + 0.16 * speckle);
+      color.toArray(colors, at * 3);
+    };
+    write(0, 0, 0);
+    for (let ring = 1; ring <= HILL_RINGS; ring += 1) {
+      const r = ring / HILL_RINGS;
+      for (let side = 0; side < HILL_SIDES; side += 1) {
+        const a = (side / HILL_SIDES) * Math.PI * 2;
+        write(1 + (ring - 1) * HILL_SIDES + side, Math.cos(a) * r, Math.sin(a) * r);
+      }
+    }
+    // Wound so that the faces look up.
+    const at = (ring: number, side: number) => start + 1 + (ring - 1) * HILL_SIDES + (side % HILL_SIDES);
+    for (let side = 0; side < HILL_SIDES; side += 1) indices.push(start, at(1, side + 1), at(1, side));
+    for (let ring = 1; ring < HILL_RINGS; ring += 1) {
+      for (let side = 0; side < HILL_SIDES; side += 1) {
+        indices.push(at(ring, side), at(ring, side + 1), at(ring + 1, side));
+        indices.push(at(ring, side + 1), at(ring + 1, side + 1), at(ring + 1, side));
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('aRock', new THREE.BufferAttribute(rockiness, 1));
+  geometry.setAttribute('aHaze', new THREE.BufferAttribute(haze, 1));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/** The ground's own grass and stone textures and fog, so a hill's foot melts into the meadow. */
+function makeHillMaterial(moss: THREE.Texture, stone: THREE.Texture, hazeOpen: { value: number }): THREE.MeshLambertMaterial {
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true });
+  applyVertexSnap(material);
+  const snap = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    snap.call(material, shader, renderer);
+    Object.assign(shader.uniforms, { uMoss: { value: moss }, uStone: { value: stone }, uHazeOpen: hazeOpen });
+    shader.vertexShader = `attribute float aRock;\nattribute float aHaze;\nvarying vec3 vHill;\nvarying float vHillRock;\nvarying float vHillHaze;\n${shader.vertexShader}`.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       vHill = position;
+       vHillRock = aRock;
+       vHillHaze = aHaze;`,
+    );
+    shader.fragmentShader = `
+      uniform sampler2D uMoss, uStone;
+      uniform float uHazeOpen;
+      varying vec3 vHill;
+      varying float vHillRock;
+      varying float vHillHaze;
+      ${shader.fragmentShader}`.replace(
+      '#include <map_fragment>',
+      `vec2 tile = vHill.xz / 7.0;
+       vec3 grass = texture2D(uMoss, tile * 0.7).rgb * ${MEADOW_GRASS};
+       vec3 rock = texture2D(uStone, tile * 0.9).rgb * vec3(1.15, 1.08, 0.98);
+       diffuseColor.rgb *= mix(grass, rock, vHillRock) * 3.0;`,
+    ).replace(
+      '#include <fog_fragment>',
+      // The ground's haze, so the big hills past the edge fade like the mountains behind them.
+      `float groundFog = smoothstep(fogNear, fogFar, vFogDepth);
+       float ridgeFog = 0.42 + 0.56 * smoothstep(60.0, 900.0, vFogDepth);
+       float ridgeAmount = smoothstep(0.5, 9.0, vHill.y) * uHazeOpen * vHillHaze;
+       gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, mix(groundFog, min(groundFog, ridgeFog), ridgeAmount));`,
+    );
+  };
+  material.customProgramCacheKey = () => 'world-hills';
   return material;
 }
 
@@ -1311,7 +1480,7 @@ export interface WorldScene {
   nearestChest: (x: number, z: number) => WorldChest | null;
   graces: readonly MapGrace[];
   /** Only for tools/build-world-map.mjs, through the map lab. Never called by the game. */
-  prepareTopDown: (sunDirection: THREE.Vector3) => { ground: THREE.Object3D | null; sun: THREE.DirectionalLight };
+  prepareTopDown: (sunDirection: THREE.Vector3) => { ground: THREE.Object3D | null; hills: THREE.Object3D | null; sun: THREE.DirectionalLight };
 }
 
 export interface WorldOptions {
@@ -1373,6 +1542,7 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
   let shafts: THREE.Mesh | null = null;
   let fireGroup: THREE.Object3D | null = null;
   let groundMesh: THREE.Object3D | null = null;
+  let hillMesh: THREE.Object3D | null = null;
   /** Set for the map bake: update() stops touching the scene, and nothing is culled. */
   let topDown = false;
   const fireMaterials: THREE.ShaderMaterial[] = [];
@@ -1411,6 +1581,13 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
     ground.frustumCulled = false;
     scene.add(ground);
     groundMesh = ground;
+    const hillData = MAP.hills ?? [];
+    if (hillData.length >= 6) {
+      const hills = new THREE.Mesh(buildHillGeometry(hillData), makeHillMaterial(groundTextures[1], groundTextures[5], hazeOpen));
+      hills.name = 'hills';
+      scene.add(hills);
+      hillMesh = hills;
+    }
 
     mist = buildMist(shared, 64);
     scene.add(mist);
@@ -1751,7 +1928,7 @@ export function createWorld({ withRocks = true, fixedPhase }: WorldOptions = {})
       texture.anisotropy = 8;
       texture.needsUpdate = true;
     }
-    return { ground: groundMesh, sun };
+    return { ground: groundMesh, hills: hillMesh, sun };
   };
 
   const setChestOpen = (id: number, open: boolean, animate: boolean) => {

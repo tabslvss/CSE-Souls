@@ -5,6 +5,7 @@ import { sound } from '../sound';
 import { Avatar } from './Avatar';
 import { Sigil } from './Ornaments';
 import { Toasts } from './toast';
+import { PadHints, type PadHint } from '../ui/PadHints';
 
 export const TEAM = ['Tabshir Khandaker', 'Kristian Schuchman', 'Ryan Chan'];
 
@@ -87,6 +88,14 @@ const LINKS = [
   { to: '/achievements', label: 'Achievements' },
 ];
 
+/** The site's own hint bar. A page that renders its own PadHints bar replaces it. */
+const SITE_HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'confirm', label: 'Select' },
+  { button: 'back', label: 'Back' },
+  { button: 'scroll', label: 'Scroll' },
+];
+
 export function Layout() {
   const { pathname } = useLocation();
   const previousPath = useRef(pathname);
@@ -102,8 +111,8 @@ export function Layout() {
   }, [pathname]);
 
   return (
-    <div className="site">
-      <a className="skip-link" href="#main">Skip to content</a>
+    <div className="site" data-pad-scope="site">
+      <a className="skip-link" href="#main" data-pad-skip>Skip to content</a>
       <nav className="topbar" aria-label="Main">
         <Link className="brand" to="/" aria-label="CSE Souls home">
           <Sigil />
@@ -145,6 +154,7 @@ export function Layout() {
         </ul>
       </footer>
       <Toasts />
+      <PadHints hints={SITE_HINTS} priority={-1} />
     </div>
   );
 }

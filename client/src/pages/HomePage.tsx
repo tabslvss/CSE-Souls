@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, type LeaderboardEntry, type RealmStatus } from '../api';
 import { artUrl } from '../art';
@@ -11,6 +11,20 @@ import { HeroScene } from '../scene/HeroScene';
 import { Vignette, type VignetteKind } from '../scene/Vignette';
 import { timeOfDayName, worldPhase } from '../scene/worldClock';
 import { useSession } from '../session';
+import { PadHints, type PadHint } from '../ui/PadHints';
+
+const HINTS: PadHint[] = [
+  { button: 'dpad', label: 'Move' },
+  { button: 'confirm', label: 'Select' },
+  { button: 'scroll', label: 'Scroll' },
+];
+
+/**
+ * The cards that describe the game are stops for the controller's highlight, so moving down the
+ * page walks through them instead of jumping past them to the next button. They are made into
+ * items here because the shared Reveal wrapper takes no extra attributes.
+ */
+const CONTENT_STOPS = '.class-tile, .area, .boss__text, .features > li, .gameplay__panel';
 
 const CLASS_ICONS: Record<ClassId, string> = {
   juggernaut: 'battle-axe',
@@ -149,9 +163,14 @@ function TopPlayers() {
 export function HomePage() {
   const { user } = useSession();
   const logo = artUrl('logo');
+  const page = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    page.current?.querySelectorAll(CONTENT_STOPS).forEach((element) => element.setAttribute('data-pad-item', ''));
+  }, []);
 
   return (
-    <>
+    <div ref={page} className="home">
       <section className="hero">
         <HeroScene className="hero__scene" />
         <div className="hero__veil" />
@@ -169,12 +188,12 @@ export function HomePage() {
           <div className="hero__actions">
             {user ? (
               <>
-                <Link className="btn btn--primary btn--large" to="/play">Play Now</Link>
+                <Link className="btn btn--primary btn--large" to="/play" data-pad-default>Play Now</Link>
                 <Link className="btn btn--large" to="/character">My Character</Link>
               </>
             ) : (
               <>
-                <Link className="btn btn--primary btn--large" to="/register">Create Account</Link>
+                <Link className="btn btn--primary btn--large" to="/register" data-pad-default>Create Account</Link>
                 <Link className="btn btn--large" to="/login">Log In</Link>
               </>
             )}
@@ -295,6 +314,7 @@ export function HomePage() {
           {user ? 'Play Now' : 'Create Account'}
         </Link>
       </section>
-    </>
+      <PadHints hints={HINTS} />
+    </div>
   );
 }

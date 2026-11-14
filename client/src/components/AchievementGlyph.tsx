@@ -8,6 +8,7 @@ const ICONS: Record<string, string> = {
   beast_hunter: 'deer-head',
   grave_walker: 'tombstone',
   boss_slayer: 'crowned-skull',
+  bull_slayer: 'horned-skull',
   unbroken: 'checked-shield',
   first_grace: 'campfire',
   first_upgrade: 'health-potion',

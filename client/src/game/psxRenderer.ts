@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { setVhsEnabled, vhsEnabled } from './fx/vhsSetting';
+import { ImpactSequencer, createImpactUniforms, type ImpactUniforms } from './impactFrames';
 
 const MIN_INTERNAL_HEIGHT = 240;
 const MAX_INTERNAL_HEIGHT = 300;
@@ -25,6 +26,13 @@ const DITHER_SHADER = /* glsl */ `
   uniform float uVignette;
   uniform float uDamage;
   uniform vec4 uLens; // center x, center y, ring radius, strength
+  uniform vec4 uImpact;       // mode (0 off, 1 threshold, 2 edge, 3 flash, 4 dim), invert, mix, tone shift
+  uniform vec4 uImpactLines;  // focus x, focus y, amount, clear radius
+  uniform vec4 uImpactSplit;  // normal x, normal y, shift in pixels, on
+  uniform vec4 uImpactAccent; // rgb, on
+  uniform vec3 uImpactPaper;
+  uniform vec3 uImpactInk;
+  uniform vec4 uImpactShake;  // jitter x, jitter y, chroma split, seed
   varying vec2 vUv;
 
   const float BAYER[16] = float[16](
@@ -33,6 +41,102 @@ const DITHER_SHADER = /* glsl */ `
     3.0, 11.0, 1.0, 9.0,
     15.0, 7.0, 13.0, 5.0
   );
+
+  vec3 sceneAt(vec2 pixel) {
+    return pow(max(texture2D(tScene, (pixel + 0.5) / uResolution).rgb, vec3(0.0)), vec3(1.0 / 2.2));
+  }
+
+  float luma(vec3 c) {
+    return dot(c, vec3(0.299, 0.587, 0.114));
+  }
+
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+  }
+
+  float bayerAt(vec2 pixel) {
+    int index = int(mod(pixel.x, 4.0)) + 4 * int(mod(pixel.y, 4.0));
+    return (BAYER[index] + 0.5) / 16.0;
+  }
+
+  // Impact frames. Everything is worked out from the scene already drawn, in whole low-res pixels,
+  // and the result is pure paper or ink, so the Bayer pattern below is what makes the mid-tones.
+  vec3 impactLook(vec2 pixel, vec3 graded) {
+    int mode = int(uImpact.x + 0.5);
+    if (mode == 4) return vec3(luma(graded) * 0.5);
+
+    vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+    vec2 fromFocus = ((pixel + 0.5) / uResolution - uImpactLines.xy) * aspect;
+    float flip = uImpact.y;
+    vec2 at = pixel;
+    vec3 source = graded;
+    float seam = 0.0;
+    if (uImpactSplit.w > 0.5) {
+      // A hard cut through the hit: the far side is inverted and slid along the cut.
+      float across = dot(fromFocus, uImpactSplit.xy) * uResolution.y;
+      float side = step(0.0, across);
+      at = floor(pixel + vec2(uImpactSplit.y, -uImpactSplit.x) * uImpactSplit.z * side + 0.5);
+      source = side > 0.5 ? sceneAt(at) * vec3(1.04, 0.99, 0.88) : graded;
+      flip = abs(flip - side);
+      seam = 1.0 - step(1.0, abs(across));
+    }
+
+    float dither = bayerAt(pixel);
+    float paper;
+    if (mode == 3) {
+      paper = 1.0;
+    } else if (mode == 2) {
+      // Sobel two pixels apart, so the outlines come out two to three low-res pixels thick.
+      float tl = luma(sceneAt(at + vec2(-2.0, 2.0)));
+      float tc = luma(sceneAt(at + vec2(0.0, 2.0)));
+      float tr = luma(sceneAt(at + vec2(2.0, 2.0)));
+      float ml = luma(sceneAt(at + vec2(-2.0, 0.0)));
+      float mr = luma(sceneAt(at + vec2(2.0, 0.0)));
+      float bl = luma(sceneAt(at + vec2(-2.0, -2.0)));
+      float bc = luma(sceneAt(at + vec2(0.0, -2.0)));
+      float br = luma(sceneAt(at + vec2(2.0, -2.0)));
+      float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
+      float gy = (tl + 2.0 * tc + tr) - (bl + 2.0 * bc + br);
+      float strength = length(vec2(gx, gy));
+      paper = step(dither, smoothstep(0.2, 0.38, strength));
+    } else {
+      // Contrast first, then three tones (black, a sparse quarter screentone, white), so nothing
+      // sits as flat grey and the lit figure stands clear of a dimly lit floor.
+      float tone = smoothstep(0.05 - uImpact.w, 0.27 - uImpact.w, luma(source));
+      float level = floor(tone * 2.0 + 0.35);
+      tone = level > 1.5 ? 1.0 : level * 0.3;
+      paper = step(dither, tone);
+    }
+
+    if (uImpactLines.z > 0.0 && mode != 3) {
+      // Radial streaks: one per angular slot, picked and sized by a hash that changes every frame.
+      float radius = length(fromFocus);
+      float turn = atan(fromFocus.y, fromFocus.x) / 6.2831853 + 0.5;
+      float slots = 54.0 + 30.0 * uImpactLines.z;
+      float slot = floor(turn * slots);
+      float pick = hash(vec2(slot, uImpactShake.w));
+      float size = hash(vec2(slot + 31.0, uImpactShake.w * 1.7));
+      float start = uImpactLines.w + size * (0.45 - 0.3 * uImpactLines.z);
+      float within = abs(fract(turn * slots) - 0.5) * 2.0;
+      float width = (0.3 + 0.55 * size) * smoothstep(start, start + 0.3, radius);
+      float line = step(1.0 - (0.28 + 0.34 * uImpactLines.z), pick) * step(within, width) * step(start, radius);
+      paper = max(paper, line);
+    }
+
+    paper = max(paper, seam);
+    vec3 result = mix(uImpactInk, uImpactPaper, abs(paper - flip));
+
+    if (uImpactAccent.w > 0.5) {
+      // The trail or the spell keeps its color: anything very bright, or strongly of the accent's hue.
+      float bright = luma(source);
+      vec3 chroma = source - bright;
+      vec3 accentChroma = uImpactAccent.rgb - luma(uImpactAccent.rgb);
+      float match = dot(chroma, accentChroma) / (length(chroma) * length(accentChroma) + 0.0001);
+      float keep = max(smoothstep(0.8, 0.95, bright), smoothstep(0.75, 0.92, match) * smoothstep(0.14, 0.3, length(chroma)));
+      result = mix(result, uImpactAccent.rgb * (0.85 + 0.3 * bright), step(dither, keep));
+    }
+    return result;
+  }
 
   void main() {
     // A ring of bent light spreading from the biggest blasts. It bends before the pixels are chosen,
@@ -44,9 +148,13 @@ const DITHER_SHADER = /* glsl */ `
       float ring = smoothstep(0.1, 0.0, abs(away - uLens.z));
       if (away > 0.001) lensUv -= fromCenter / away * vec2(uResolution.y / uResolution.x, 1.0) * ring * uLens.w;
     }
-    vec2 pixel = floor(lensUv * uResolution);
-    vec3 color = texture2D(tScene, (pixel + 0.5) / uResolution).rgb;
-    color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
+    // Impact jitter moves the whole picture by whole low-res pixels.
+    vec2 pixel = floor(lensUv * uResolution) + uImpactShake.xy;
+    vec3 color = sceneAt(pixel);
+    if (uImpactShake.z > 0.0) {
+      color.r = sceneAt(pixel + vec2(uImpactShake.z, 0.0)).r;
+      color.b = sceneAt(pixel - vec2(uImpactShake.z, 0.0)).b;
+    }
 
     // Slight warm grade, so shadows lean toward old gold.
     color *= vec3(1.04, 0.99, 0.88);
@@ -57,8 +165,9 @@ const DITHER_SHADER = /* glsl */ `
     // Only with the tape off. The tape pass draws its own, and getting hurt must show either way.
     color = mix(color, vec3(0.42, 0.015, 0.02) + color * 0.3, smoothstep(0.1, 0.5, dot(centered, centered) * 1.6) * uDamage * 0.85);
 
-    int index = int(mod(pixel.x, 4.0)) + 4 * int(mod(pixel.y, 4.0));
-    float threshold = (BAYER[index] + 0.5) / 16.0 - 0.5;
+    if (uImpact.x > 0.5) color = mix(color, impactLook(pixel, color), uImpact.z);
+
+    float threshold = bayerAt(pixel) - 0.5;
     color += threshold * uDitherStrength / uLevels;
     color = floor(color * uLevels + 0.5) / uLevels;
 
@@ -292,6 +401,9 @@ export class VhsControls {
 export class PsxRenderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly vhs = new VhsControls();
+  /** Impact frames: play(preset, { focus }), update(realSeconds) every frame, active, cancel(). See impactFrames.ts. */
+  readonly impact = new ImpactSequencer();
+  private readonly impactUniforms: ImpactUniforms = createImpactUniforms();
   private readonly target: THREE.WebGLRenderTarget;
   private readonly picture: THREE.WebGLRenderTarget;
   private echoFront: THREE.WebGLRenderTarget;
@@ -342,6 +454,7 @@ export class PsxRenderer {
         uVignette: { value: 1.1 },
         uDamage: { value: 0 },
         uLens: { value: new THREE.Vector4(0, 0, 0, 0) },
+        ...this.impactUniforms,
       },
     });
     this.echoMaterial = new THREE.ShaderMaterial({
@@ -401,8 +514,14 @@ export class PsxRenderer {
     const frame = Math.min(MAX_FRAME_SECONDS, seconds ?? (now - this.lastNow) / 1000);
     this.lastNow = now;
 
-    this.renderer.setRenderTarget(this.target);
-    this.renderer.render(scene, camera);
+    // A still impact frame holds the last picture drawn, so the scene isn't drawn at all.
+    const impact = this.impact;
+    if (!impact.frozen) {
+      this.renderer.setRenderTarget(this.target);
+      this.renderer.render(scene, camera);
+    }
+    impact.write(this.impactUniforms);
+    const impactOn = impact.active;
 
     // Before the choice below, so a spike can't sit frozen until the tape is turned back on.
     const vhs = this.vhs;
@@ -429,13 +548,17 @@ export class PsxRenderer {
     this.quad.material = this.material;
     this.renderer.setRenderTarget(this.picture);
     this.renderer.render(this.quadScene, this.quadCamera);
+    // The black and white frames never go into the echo, or the last one ghosts over the scene for a second after.
+    // It starts afresh from the first normal frame.
+    if (impactOn) this.echoFresh = false;
 
     this.tapeTime += frame;
     // Reduced motion keeps the tape's color and removes everything that moves.
     const still = this.reducedMotion.matches;
 
     const echoAmount = still ? 0 : Math.min(0.85, BASE_ECHO * (vhs.intensity / BASE_INTENSITY) + vhs.echoLevel * 0.7);
-    if (!still) {
+    const echoOn = !still && !impactOn;
+    if (echoOn) {
       // Frame-rate independent: the same smear length whether the game runs at 30 or 60 fps.
       const decay = Math.exp(-frame * (9 - 6 * vhs.echoLevel));
       const echoUniforms = this.echoMaterial.uniforms;
@@ -453,18 +576,60 @@ export class PsxRenderer {
     uniforms.uTime.value = this.tapeTime;
     uniforms.uMotion.value = still ? 0 : 1;
     uniforms.uIntensity.value = vhs.intensity;
-    uniforms.uGlitch.value = still ? 0 : vhs.glitchLevel;
-    uniforms.uEcho.value = echoAmount;
+    // During impact frames the deck's own crush and tearing would only muddy the black and white.
+    uniforms.uGlitch.value = still ? 0 : vhs.glitchLevel * (impactOn ? 0.3 : 1);
+    uniforms.uEcho.value = echoOn ? echoAmount : 0;
     uniforms.uDamage.value = vhs.damageLevel;
-    uniforms.uImpact.value = still ? vhs.impactLevel * 0.5 : vhs.impactLevel;
+    uniforms.uImpact.value = impactOn ? 0 : still ? vhs.impactLevel * 0.5 : vhs.impactLevel;
     this.quad.material = this.vhsMaterial;
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.quadScene, this.quadCamera);
 
-    if (!still) {
+    if (echoOn) {
       const swap = this.echoFront;
       this.echoFront = this.echoBack;
       this.echoBack = swap;
+    }
+  }
+
+  /**
+   * Makes sure the post passes, impact frames included, are compiled and have drawn once, so the first
+   * impact frame of a fight doesn't stall. Every impact look is the same program with different uniforms,
+   * so this draws each look once into a 1x1 target and then puts the uniforms back. Safe to call again.
+   */
+  prewarm(): void {
+    const renderer = this.renderer;
+    const before = renderer.getRenderTarget();
+    const material = this.quad.material;
+    const impact = this.impactUniforms.uImpact.value;
+    const split = this.impactUniforms.uImpactSplit.value;
+    const accent = this.impactUniforms.uImpactAccent.value;
+    const lines = this.impactUniforms.uImpactLines.value;
+    const saved = [impact.clone(), split.clone(), accent.clone(), lines.clone()];
+    const target = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
+    try {
+      renderer.setRenderTarget(target);
+      for (const pass of [this.material, this.echoMaterial, this.vhsMaterial]) {
+        this.quad.material = pass;
+        renderer.compile(this.quadScene, this.quadCamera);
+        renderer.render(this.quadScene, this.quadCamera);
+      }
+      this.quad.material = this.material;
+      for (let mode = 1; mode <= 4; mode += 1) {
+        impact.set(mode, mode & 1, 1, 0);
+        split.w = mode === 1 ? 1 : 0;
+        accent.w = mode === 2 ? 1 : 0;
+        lines.z = mode < 3 ? 1 : 0;
+        renderer.render(this.quadScene, this.quadCamera);
+      }
+    } finally {
+      impact.copy(saved[0]);
+      split.copy(saved[1]);
+      accent.copy(saved[2]);
+      lines.copy(saved[3]);
+      this.quad.material = material;
+      renderer.setRenderTarget(before);
+      target.dispose();
     }
   }
 

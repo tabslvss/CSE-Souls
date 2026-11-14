@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, type LeaderboardEntry, type LeaderboardSort } from '../api';
 import { Avatar } from '../components/Avatar';
 import { Panel, SectionHeading } from '../components/Ornaments';
+import { isPadDevice } from '../game/inputDevice';
 import { useSession } from '../session';
+import { PadHints, type PadHint } from '../ui/PadHints';
+import { padFocus, type PadNavDetail } from '../ui/padNav';
 
 const PAGE_SIZE = 25;
 
@@ -21,6 +24,40 @@ export function LeaderboardPage() {
   const [entries, setEntries] = useState<LeaderboardEntry[] | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const pager = useRef<HTMLDivElement>(null);
+  const paged = total > PAGE_SIZE;
+
+  // The triggers turn the page, like the Previous and Next buttons.
+  const latest = useRef({ offset, total });
+  latest.current = { offset, total };
+  useEffect(() => {
+    const onPad = (event: Event) => {
+      const { action, scope } = (event as CustomEvent<PadNavDetail>).detail;
+      if (action !== 'lt' && action !== 'rt') return;
+      // Only for the page itself, not a dialog open on top of it.
+      if (scope && scope.dataset.padScope !== 'site') return;
+      const { offset: current, total: count } = latest.current;
+      const next = action === 'rt' ? current + PAGE_SIZE : current - PAGE_SIZE;
+      if (next < 0 || next >= count) return;
+      event.preventDefault();
+      setOffset(next);
+    };
+    window.addEventListener('padnav', onPad);
+    return () => window.removeEventListener('padnav', onPad);
+  }, []);
+
+  // Reaching the first or last page disables the button just pressed, which drops the controller's
+  // highlight. Hand it to the other one.
+  const pagerPressed = useRef(false);
+  useEffect(() => {
+    if (!pagerPressed.current) return;
+    pagerPressed.current = false;
+    if (!isPadDevice()) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const other = pager.current?.querySelector<HTMLElement>('button:not(:disabled)');
+    if (other) padFocus(other);
+  }, [offset]);
 
   useEffect(() => {
     let active = true;
@@ -51,6 +88,8 @@ export function LeaderboardPage() {
             role="tab"
             aria-selected={sort === tab.key}
             className="tabs__tab"
+            data-pad-tab
+            data-pad-default={sort === tab.key || undefined}
             onClick={() => {
               setSort(tab.key);
               setOffset(0);
@@ -99,13 +138,16 @@ export function LeaderboardPage() {
             </table>
           </div>
         )}
-        {total > PAGE_SIZE && (
-          <div className="pager">
+        {paged && (
+          <div className="pager" ref={pager}>
             <button
               type="button"
               className="btn btn--small"
               disabled={offset === 0}
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+              onClick={() => {
+                pagerPressed.current = true;
+                setOffset(Math.max(0, offset - PAGE_SIZE));
+              }}
             >
               Previous
             </button>
@@ -116,13 +158,26 @@ export function LeaderboardPage() {
               type="button"
               className="btn btn--small"
               disabled={offset + PAGE_SIZE >= total}
-              onClick={() => setOffset(offset + PAGE_SIZE)}
+              onClick={() => {
+                pagerPressed.current = true;
+                setOffset(offset + PAGE_SIZE);
+              }}
             >
               Next
             </button>
           </div>
         )}
       </Panel>
+      <PadHints
+        hints={[
+          { button: 'dpad', label: 'Move' },
+          { button: 'confirm', label: 'View player' },
+          { button: 'tabs', label: 'Rank by' },
+          ...(paged ? [{ button: 'triggers', label: 'Page' } satisfies PadHint] : []),
+          { button: 'scroll', label: 'Scroll' },
+          { button: 'back', label: 'Back' },
+        ]}
+      />
     </div>
   );
 }
